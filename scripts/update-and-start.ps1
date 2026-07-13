@@ -1,4 +1,4 @@
-﻿param([switch]$Check)
+﻿param([switch]$Check, [switch]$UpdateOnly)
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "common.ps1")
@@ -39,6 +39,10 @@ try {
         Write-Info "更新完成：$($before.Substring(0, 8)) -> $($after.Substring(0, 8))"
     } else {
         Write-Info "当前已经是 GitHub 最新版本。"
+    }
+    if ($UpdateOnly) {
+        Write-Host "UPDATE_ONLY_OK head=$after"
+        return
     }
 } finally {
     Pop-Location
