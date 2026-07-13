@@ -264,7 +264,7 @@
         <div class="analysis-user-control">
           <div class="analysis-user-copy">
             <strong>分析用户</strong>
-            <span>按 ambr 复选；每个用户独立生成方案 A / B 图表。</span>
+            <span>按 ambr 多选或全选；每个用户占一行，方案 A / B 左右对照。</span>
           </div>
           <div id="analysisUserPicker" class="analysis-user-picker">
             <button id="analysisUserPickerBtn" class="select-button" type="button" aria-expanded="false" disabled>
@@ -273,18 +273,24 @@
             <div id="analysisUserPickerMenu" class="analysis-user-menu hidden">
               <input id="analysisUserSearch" class="small-input" type="search" placeholder="搜索 ambr">
               <div class="analysis-user-actions">
-                <button id="selectVisibleUsersBtn" class="text-btn" type="button">全选当前结果</button>
+                <button id="selectVisibleUsersBtn" class="text-btn" type="button">全选当前列表</button>
                 <button id="clearAnalysisUsersBtn" class="text-btn" type="button">清空</button>
               </div>
               <div id="analysisUserOptions" class="analysis-user-options"></div>
               <div class="analysis-user-footer">
-                <span id="analysisUserDraftCount">已选 0 / 20</span>
+                <span id="analysisUserDraftCount">已选 0 / 共 0</span>
                 <button id="applyAnalysisUsersBtn" class="primary-btn" type="button">应用用户</button>
               </div>
             </div>
           </div>
         </div>
-        <div id="chartUserTabs" class="user-tabs"><button class="active" type="button" data-user="__ALL__">小区全量</button></div>
+        <div class="chart-filter-context">
+          <div class="chart-filter-copy">
+            <strong>当前筛选</strong>
+            <span>与“合并明细”的列条件和全局搜索一致；分析用户作为额外范围逐行绘图。</span>
+          </div>
+          <div id="chartFilterChips" class="filter-chips"></div>
+        </div>
         <div class="chart-config">
           <div class="metric-picker-block">
             <div class="subsection-head"><div><h3>绘图字段</h3><p>最多选择 8 个；数值字段生成序列/CDF，类别字段生成 A/B 频次分布。</p></div></div>

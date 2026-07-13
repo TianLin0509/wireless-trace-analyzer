@@ -352,6 +352,31 @@ def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
         assert sequence["data"][0]["y"] == [10.0, 15.0, 20.0]
         assert sequence["layout"]["xaxis"]["title"]["text"] == "TTI"
 
+        multi_user_plots = run_plot_task(
+            session,
+            "test-plot-multi-user",
+            metrics=["cw0SuMcs", "schType"],
+            filters=[{"column": "schType", "op": "eq", "value": "DL"}],
+            user_values=["5001", "5002"],
+        )
+        multi_sequence = multi_user_plots["figures"]["cw0SuMcs · 序列"]
+        assert len(multi_sequence["data"]) == 4
+        assert [item["text"] for item in multi_sequence["layout"]["annotations"]] == [
+            "ambr 5001 · 方案 A",
+            "ambr 5001 · 方案 B",
+            "ambr 5002 · 方案 A",
+            "ambr 5002 · 方案 B",
+        ]
+        assert multi_sequence["layout"]["xaxis3"]["title"]["text"] == "TTI"
+        assert multi_sequence["layout"]["height"] > 520
+        multi_frequency = multi_user_plots["figures"]["schType · 频次"]
+        assert len(multi_frequency["data"]) == 4
+        assert {row["scope"] for row in multi_user_plots["summary_rows"]} == {
+            "ambr 5001",
+            "ambr 5002",
+        }
+        assert multi_user_plots["user_values"] == ["5001", "5002"]
+
         export_path = export_filtered_csv(
             session,
             side="A",

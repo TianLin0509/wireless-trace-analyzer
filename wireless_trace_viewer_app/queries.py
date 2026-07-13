@@ -22,6 +22,7 @@ from .config import (
     MAX_CDF_POINTS,
     MAX_CHART_METRICS,
     MAX_CHART_POINTS,
+    MAX_CHART_USERS,
     MAX_FILTER_UNIQUES,
     MAX_PAGE_SIZE,
 )
@@ -585,109 +586,181 @@ def _figure_payload(figure: go.Figure) -> dict[str, Any]:
 
 def _split_sequence_figure(
     metric: str,
-    values: dict[str, dict[str, Any]],
+    scope_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    present = [side for side in ("A", "B") if side in values]
+    present = [
+        side
+        for side in ("A", "B")
+        if any(side in row.get("values", {}) for row in scope_rows)
+    ]
+    row_count = max(1, len(scope_rows))
     figure = make_subplots(
-        rows=1,
+        rows=row_count,
         cols=max(1, len(present)),
         horizontal_spacing=0.09,
-        subplot_titles=[f"方案 {side}" for side in present],
+        vertical_spacing=min(0.12, 0.5 / row_count),
+        subplot_titles=[
+            f"{row['label']} · 方案 {side}"
+            for row in scope_rows
+            for side in present
+        ],
     )
     colors = {"A": COLOR_A, "B": COLOR_B}
-    for column_index, side in enumerate(present, start=1):
-        x_values = values[side].get("x") or []
-        y_values = values[side].get("y") or []
-        x_title = str(values[side].get("x_title") or "采样序号")
-        hover_x = "TTI" if x_title == "TTI" else "样本"
-        figure.add_trace(
-            go.Scatter(
-                x=x_values,
-                y=y_values,
-                mode="lines",
-                name=f"方案 {side}",
-                line={"color": colors[side], "width": 1.8},
-                hovertemplate=f"{hover_x}=%{{x}}<br>{metric}=%{{y}}<extra></extra>",
-            ),
-            row=1,
-            col=column_index,
-        )
-        figure.update_xaxes(title_text=x_title, row=1, col=column_index)
-        figure.update_yaxes(title_text=metric, row=1, col=column_index)
-    uses_tti = any(str(item.get("x_title")) == "TTI" for item in values.values())
+    for row_index, scope in enumerate(scope_rows, start=1):
+        values = scope.get("values", {})
+        for column_index, side in enumerate(present, start=1):
+            side_values = values.get(side, {})
+            x_values = side_values.get("x") or []
+            y_values = side_values.get("y") or []
+            x_title = str(side_values.get("x_title") or "采样序号")
+            hover_x = "TTI" if x_title == "TTI" else "样本"
+            figure.add_trace(
+                go.Scatter(
+                    x=x_values,
+                    y=y_values,
+                    mode="lines",
+                    name=f"方案 {side}",
+                    legendgroup=side,
+                    showlegend=row_index == 1,
+                    line={"color": colors[side], "width": 1.8},
+                    hovertemplate=(
+                        f"{scope['label']}<br>{hover_x}=%{{x}}<br>"
+                        f"{metric}=%{{y}}<extra></extra>"
+                    ),
+                ),
+                row=row_index,
+                col=column_index,
+            )
+            figure.update_xaxes(
+                title_text=x_title, row=row_index, col=column_index
+            )
+            figure.update_yaxes(
+                title_text=metric, row=row_index, col=column_index
+            )
+    uses_tti = any(
+        str(item.get("x_title")) == "TTI"
+        for row in scope_rows
+        for item in row.get("values", {}).values()
+    )
     figure.update_layout(
         title=f"{metric} · A/B {'TTI 升序' if uses_tti else '样本'}序列",
-        height=520,
+        height=max(520, 300 * row_count + 130),
     )
     return _figure_payload(figure)
 
 
 def _split_cdf_figure(
     metric: str,
-    cdfs: dict[str, tuple[list[float], list[float]]],
+    scope_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    present = [side for side in ("A", "B") if side in cdfs]
+    present = [
+        side
+        for side in ("A", "B")
+        if any(side in row.get("values", {}) for row in scope_rows)
+    ]
+    row_count = max(1, len(scope_rows))
     figure = make_subplots(
-        rows=1,
+        rows=row_count,
         cols=max(1, len(present)),
         horizontal_spacing=0.09,
-        subplot_titles=[f"方案 {side}" for side in present],
+        vertical_spacing=min(0.12, 0.5 / row_count),
+        subplot_titles=[
+            f"{row['label']} · 方案 {side}"
+            for row in scope_rows
+            for side in present
+        ],
     )
     colors = {"A": COLOR_A, "B": COLOR_B}
-    for column_index, side in enumerate(present, start=1):
-        x_values, y_values = cdfs[side]
-        figure.add_trace(
-            go.Scatter(
-                x=x_values,
-                y=y_values,
-                mode="lines",
-                name=f"方案 {side}",
-                line={"color": colors[side], "width": 2},
-                hovertemplate="值=%{x}<br>CDF=%{y:.2f}%<extra></extra>",
-            ),
-            row=1,
-            col=column_index,
-        )
-        figure.update_xaxes(title_text=metric, row=1, col=column_index)
-        figure.update_yaxes(title_text="CDF (%)", row=1, col=column_index)
-    figure.update_layout(title=f"{metric} · A/B CDF", height=520)
+    for row_index, scope in enumerate(scope_rows, start=1):
+        cdfs = scope.get("values", {})
+        for column_index, side in enumerate(present, start=1):
+            x_values, y_values = cdfs.get(side, ([], []))
+            figure.add_trace(
+                go.Scatter(
+                    x=x_values,
+                    y=y_values,
+                    mode="lines",
+                    name=f"方案 {side}",
+                    legendgroup=side,
+                    showlegend=row_index == 1,
+                    line={"color": colors[side], "width": 2},
+                    hovertemplate=(
+                        f"{scope['label']}<br>值=%{{x}}<br>"
+                        "CDF=%{y:.2f}%<extra></extra>"
+                    ),
+                ),
+                row=row_index,
+                col=column_index,
+            )
+            figure.update_xaxes(
+                title_text=metric, row=row_index, col=column_index
+            )
+            figure.update_yaxes(
+                title_text="CDF (%)", row=row_index, col=column_index
+            )
+    figure.update_layout(
+        title=f"{metric} · A/B CDF",
+        height=max(520, 300 * row_count + 130),
+    )
     return _figure_payload(figure)
 
 
 def _category_frequency_figure(
     column: str,
-    counts: dict[str, list[tuple[str, int]]],
+    scope_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    totals: dict[str, int] = {}
-    for rows in counts.values():
-        for value, count in rows:
-            totals[value] = totals.get(value, 0) + count
-    labels = [
-        value
-        for value, _ in sorted(totals.items(), key=lambda item: (-item[1], item[0]))
-    ][:24]
-    figure = go.Figure()
-    for side, color in (("A", COLOR_A), ("B", COLOR_B)):
-        if side not in counts:
-            continue
-        mapping = dict(counts[side])
-        figure.add_trace(
-            go.Bar(
-                x=labels,
-                y=[mapping.get(label, 0) for label in labels],
-                name=f"方案 {side}",
-                marker_color=color,
-                hovertemplate="取值=%{x}<br>行数=%{y}<extra></extra>",
+    present = [
+        side
+        for side in ("A", "B")
+        if any(side in row.get("values", {}) for row in scope_rows)
+    ]
+    row_count = max(1, len(scope_rows))
+    figure = make_subplots(
+        rows=row_count,
+        cols=max(1, len(present)),
+        horizontal_spacing=0.09,
+        vertical_spacing=min(0.12, 0.5 / row_count),
+        subplot_titles=[
+            f"{row['label']} · 方案 {side}"
+            for row in scope_rows
+            for side in present
+        ],
+    )
+    colors = {"A": COLOR_A, "B": COLOR_B}
+    for row_index, scope in enumerate(scope_rows, start=1):
+        counts = scope.get("values", {})
+        for column_index, side in enumerate(present, start=1):
+            rows = counts.get(side, [])
+            figure.add_trace(
+                go.Bar(
+                    x=[value for value, _ in rows],
+                    y=[count for _, count in rows],
+                    name=f"方案 {side}",
+                    legendgroup=side,
+                    showlegend=row_index == 1,
+                    marker_color=colors[side],
+                    hovertemplate=(
+                        f"{scope['label']}<br>取值=%{{x}}<br>"
+                        "行数=%{y}<extra></extra>"
+                    ),
+                ),
+                row=row_index,
+                col=column_index,
             )
-        )
+            figure.update_xaxes(
+                title_text=column,
+                tickangle=30,
+                automargin=True,
+                row=row_index,
+                col=column_index,
+            )
+            figure.update_yaxes(
+                title_text="行数", row=row_index, col=column_index
+            )
     figure.update_layout(
         title=f"{column} · A/B 频次分布",
-        barmode="group",
-        xaxis_title=column,
-        yaxis_title="行数",
-        height=500,
+        height=max(500, 300 * row_count + 130),
     )
-    figure.update_xaxes(tickangle=30, automargin=True)
     return _figure_payload(figure)
 
 
@@ -716,7 +789,6 @@ def _bler_data(
         )
         {group_by}
         ORDER BY valid_rows DESC
-        LIMIT 20
         """,
         parameters,
     ).fetchall()
@@ -735,7 +807,6 @@ def _bler_figure(values: dict[str, dict[str, float]]) -> Optional[dict[str, Any]
         for user in values.get(side, {}):
             if user not in users:
                 users.append(user)
-    users = users[:20]
     figure = go.Figure()
     for side, color in (("A", COLOR_A), ("B", COLOR_B)):
         if side not in values:
@@ -759,12 +830,29 @@ def _bler_figure(values: dict[str, dict[str, float]]) -> Optional[dict[str, Any]
     return _figure_payload(figure)
 
 
+def _normalize_plot_users(user_values: Optional[list[Any]]) -> list[str]:
+    users: list[str] = []
+    seen: set[str] = set()
+    for value in user_values or []:
+        user = str(value).strip()
+        if not user or user in seen:
+            continue
+        seen.add(user)
+        users.append(user)
+    if len(users) > MAX_CHART_USERS:
+        raise ValueError(
+            f"一次最多分析 {MAX_CHART_USERS} 个用户；请先在合并明细中缩小用户范围。"
+        )
+    return users
+
+
 def run_plot_task(
     session: SessionState,
     task_id: str,
     metrics: list[str],
     filters: list[dict[str, Any]],
     global_search: str = "",
+    user_values: Optional[list[Any]] = None,
 ) -> dict[str, Any]:
     merge_manifest = session.manifest.get("merge", {})
     allowed = set(merge_manifest.get("common_columns") or [])
@@ -778,76 +866,162 @@ def run_plot_task(
     if len(selected) > MAX_CHART_METRICS:
         raise ValueError(f"一次最多选择 {MAX_CHART_METRICS} 个画图字段。")
 
+    users = _normalize_plot_users(user_values)
+    scopes = (
+        [{"label": f"ambr {user}", "user": user} for user in users]
+        if users
+        else [{"label": "小区全量", "user": None}]
+    )
+
     connection = _connect_read_only(session)
     figures: dict[str, Any] = {}
     summary_rows: list[dict[str, Any]] = []
     bler_by_side: dict[str, dict[str, float]] = {}
     try:
-        side_context: dict[str, tuple[str, dict[str, Any], str, list[Any]]] = {}
-        for side in available_sides(session):
-            side_context[side] = _side_where(
-                session, side, filters, global_search=global_search
-            )
-        total_steps = max(1, len(selected))
-        for index, metric in enumerate(selected, start=1):
-            TASKS.update(
-                task_id,
-                pct=8 + index / total_steps * 78,
-                title="生成 A/B 图表",
-                detail=f"正在生成 {metric} 的图表（{index}/{total_steps}）。",
-            )
-            is_numeric_metric = metric in numeric_columns and metric not in ID_LIKE_COLUMNS
-            row = {"metric": metric, "kind": "数值" if is_numeric_metric else "类别"}
-            if is_numeric_metric:
-                sequences: dict[str, dict[str, Any]] = {}
-                cdfs: dict[str, tuple[list[float], list[float]]] = {}
-                metric_stats: dict[str, dict[str, Any]] = {}
-                for side, (table, metadata, where_sql, parameters) in side_context.items():
-                    if metric not in set(metadata.get("numeric_columns") or []):
+        scope_contexts: list[dict[str, Any]] = []
+        for scope in scopes:
+            side_context: dict[
+                str, tuple[str, dict[str, Any], str, list[Any]]
+            ] = {}
+            for side in available_sides(session):
+                scope_filters = list(filters or [])
+                if scope["user"] is not None:
+                    _, metadata = side_table(session, side)
+                    if "ambr" not in set(metadata.get("columns") or []):
                         continue
-                    stats = _metric_stats(connection, table, metric, where_sql, parameters)
-                    metric_stats[side] = stats
-                    sequences[side] = _sequence_points(
-                        connection,
+                    scope_filters.append(
+                        {"column": "ambr", "op": "eq", "value": scope["user"]}
+                    )
+                side_context[side] = _side_where(
+                    session, side, scope_filters, global_search=global_search
+                )
+            scope_contexts.append({**scope, "sides": side_context})
+
+        total_steps = max(1, len(selected) * len(scope_contexts))
+        completed_steps = 0
+        for index, metric in enumerate(selected, start=1):
+            is_numeric_metric = metric in numeric_columns and metric not in ID_LIKE_COLUMNS
+            if is_numeric_metric:
+                sequence_rows: list[dict[str, Any]] = []
+                cdf_rows: list[dict[str, Any]] = []
+                for scope in scope_contexts:
+                    completed_steps += 1
+                    TASKS.update(
+                        task_id,
+                        pct=8 + completed_steps / total_steps * 78,
+                        title="生成多用户 A/B 图表",
+                        detail=(
+                            f"正在生成 {scope['label']} · {metric} "
+                            f"（{completed_steps}/{total_steps}）。"
+                        ),
+                    )
+                    row = {
+                        "scope": scope["label"],
+                        "metric": metric,
+                        "kind": "数值",
+                    }
+                    sequences: dict[str, dict[str, Any]] = {}
+                    cdfs: dict[str, tuple[list[float], list[float]]] = {}
+                    metric_stats: dict[str, dict[str, Any]] = {}
+                    for side, (
                         table,
-                        metric,
+                        metadata,
                         where_sql,
                         parameters,
-                        int(stats["count"]),
-                        tti_column="tti" if "tti" in set(metadata.get("columns") or []) else None,
+                    ) in scope["sides"].items():
+                        if metric not in set(metadata.get("numeric_columns") or []):
+                            continue
+                        stats = _metric_stats(
+                            connection, table, metric, where_sql, parameters
+                        )
+                        metric_stats[side] = stats
+                        sequences[side] = _sequence_points(
+                            connection,
+                            table,
+                            metric,
+                            where_sql,
+                            parameters,
+                            int(stats["count"]),
+                            tti_column=(
+                                "tti"
+                                if "tti" in set(metadata.get("columns") or [])
+                                else None
+                            ),
+                        )
+                        cdfs[side] = _cdf_values(
+                            connection,
+                            table,
+                            metric,
+                            where_sql,
+                            parameters,
+                            int(stats["count"]),
+                        )
+                    sequence_rows.append(
+                        {"label": scope["label"], "values": sequences}
                     )
-                    cdfs[side] = _cdf_values(
-                        connection, table, metric, where_sql, parameters, int(stats["count"])
-                    )
-                figures[f"{metric} · 序列"] = _split_sequence_figure(metric, sequences)
-                figures[f"{metric} · CDF"] = _split_cdf_figure(metric, cdfs)
-                for side in ("A", "B"):
-                    for key, value in metric_stats.get(side, {}).items():
-                        row[f"{side}_{key}"] = value
-            else:
-                category_counts: dict[str, list[tuple[str, int]]] = {}
-                category_stats: dict[str, dict[str, Any]] = {}
-                for side, (table, metadata, where_sql, parameters) in side_context.items():
-                    if metric not in set(metadata.get("columns") or []):
-                        continue
-                    category_stats[side] = _category_stats(
-                        connection, table, metric, where_sql, parameters
-                    )
-                    category_counts[side] = _category_counts(
-                        connection, table, metric, where_sql, parameters
-                    )
-                figures[f"{metric} · 频次"] = _category_frequency_figure(
-                    metric, category_counts
+                    cdf_rows.append({"label": scope["label"], "values": cdfs})
+                    for side in ("A", "B"):
+                        for key, value in metric_stats.get(side, {}).items():
+                            row[f"{side}_{key}"] = value
+                    summary_rows.append(row)
+                figures[f"{metric} · 序列"] = _split_sequence_figure(
+                    metric, sequence_rows
                 )
-                for side in ("A", "B"):
-                    for key, value in category_stats.get(side, {}).items():
-                        row[f"{side}_{key}"] = value
-            summary_rows.append(row)
+                figures[f"{metric} · CDF"] = _split_cdf_figure(metric, cdf_rows)
+            else:
+                category_rows: list[dict[str, Any]] = []
+                for scope in scope_contexts:
+                    completed_steps += 1
+                    TASKS.update(
+                        task_id,
+                        pct=8 + completed_steps / total_steps * 78,
+                        title="生成多用户 A/B 图表",
+                        detail=(
+                            f"正在生成 {scope['label']} · {metric} "
+                            f"（{completed_steps}/{total_steps}）。"
+                        ),
+                    )
+                    row = {
+                        "scope": scope["label"],
+                        "metric": metric,
+                        "kind": "类别",
+                    }
+                    category_counts: dict[str, list[tuple[str, int]]] = {}
+                    category_stats: dict[str, dict[str, Any]] = {}
+                    for side, (
+                        table,
+                        metadata,
+                        where_sql,
+                        parameters,
+                    ) in scope["sides"].items():
+                        if metric not in set(metadata.get("columns") or []):
+                            continue
+                        category_stats[side] = _category_stats(
+                            connection, table, metric, where_sql, parameters
+                        )
+                        category_counts[side] = _category_counts(
+                            connection, table, metric, where_sql, parameters
+                        )
+                    category_rows.append(
+                        {"label": scope["label"], "values": category_counts}
+                    )
+                    for side in ("A", "B"):
+                        for key, value in category_stats.get(side, {}).items():
+                            row[f"{side}_{key}"] = value
+                    summary_rows.append(row)
+                figures[f"{metric} · 频次"] = _category_frequency_figure(
+                    metric, category_rows
+                )
 
-        for side, (table, metadata, where_sql, parameters) in side_context.items():
-            data = _bler_data(connection, table, metadata, where_sql, parameters)
-            if data:
-                bler_by_side[side] = data
+        for scope in scope_contexts:
+            for side, (table, metadata, where_sql, parameters) in scope[
+                "sides"
+            ].items():
+                data = _bler_data(
+                    connection, table, metadata, where_sql, parameters
+                )
+                if data:
+                    bler_by_side.setdefault(side, {}).update(data)
         bler_figure = _bler_figure(bler_by_side)
         if bler_figure:
             figures["BLER · 并列柱形图"] = bler_figure
@@ -855,6 +1029,8 @@ def run_plot_task(
             "figures": figures,
             "summary_rows": summary_rows,
             "bler": bler_by_side,
+            "user_values": users,
+            "scopes": [scope["label"] for scope in scopes],
         }
     finally:
         try:

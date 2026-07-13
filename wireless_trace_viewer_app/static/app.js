@@ -30,6 +30,7 @@ const state = {
   figures: {},
   activeFigure: "",
   lastMetrics: [],
+  metricSummaryRows: [],
   activeStep: 1,
   sourceCollapsed: false,
   generation: 0,
@@ -40,7 +41,6 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
-const MAX_ANALYSIS_USERS = 20;
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -583,7 +583,9 @@ async function scanDirectory() {
     state.visibleColumns = new Set();
     state.lastMetrics = [];
     state.figures = {};
+    state.metricSummaryRows = [];
     state.activeFigure = "";
+    plotSizeCustomized = false;
     renderReadInsights();
     renderMergeInsights();
     renderAnalysisUserPicker();
@@ -984,11 +986,7 @@ function tableFilters() {
 }
 
 function plotFilters() {
-  const filters = tableFilters();
-  if (state.activeUser === "__ALL__") return filters;
-  return filters.filter((item) => item.column !== "ambr").concat([
-    { column: "ambr", op: "eq", value: state.activeUser },
-  ]);
+  return tableFilters();
 }
 
 function syncUsersFromAmbrFilter() {
@@ -996,11 +994,12 @@ function syncUsersFromAmbrFilter() {
   let users = [];
   if (filter?.op === "in" && Array.isArray(filter.value)) users = filter.value;
   else if (filter?.op === "eq" || filter?.op === "eq_num") users = [filter.value];
-  state.selectedUsers = new Set(users.map(String).filter(Boolean).slice(0, MAX_ANALYSIS_USERS));
+  state.selectedUsers = new Set(users.map(String).filter(Boolean));
   state.userPickerDraft = new Set(state.selectedUsers);
   const sorted = sortedAnalysisUsers(state.selectedUsers);
   state.activeUser = sorted[0] || "__ALL__";
   renderAnalysisUserPicker();
+  renderChartFilterContext();
 }
 
 function sortedAnalysisUsers(values = state.selectedUsers) {
@@ -1024,12 +1023,14 @@ async function loadAnalysisUsers() {
   }
   state.availableUsers = Array.from(new Set((data.options?.ambr || []).map(String).filter(Boolean)));
   const valid = new Set(state.availableUsers);
-  state.selectedUsers = new Set(sortedAnalysisUsers(state.selectedUsers).filter((user) => valid.has(user)).slice(0, MAX_ANALYSIS_USERS));
+  state.selectedUsers = new Set(sortedAnalysisUsers(state.selectedUsers).filter((user) => valid.has(user)));
   state.userPickerDraft = new Set(state.selectedUsers);
   if (state.activeUser !== "__ALL__" && !state.selectedUsers.has(state.activeUser)) {
     state.activeUser = sortedAnalysisUsers()[0] || "__ALL__";
   }
   renderAnalysisUserPicker();
+  renderUserTabs();
+  renderChartFilterContext();
 }
 
 function filteredAnalysisUsers() {
@@ -1042,7 +1043,7 @@ function renderAnalysisUserOptions() {
   if (!box) return;
   const users = filteredAnalysisUsers();
   box.innerHTML = users.map((user) => `<label class="analysis-user-option" title="ambr ${escapeHtml(user)}"><input type="checkbox" class="analysis-user-check" value="${escapeHtml(user)}" ${state.userPickerDraft.has(user) ? "checked" : ""}><span>${escapeHtml(user)}</span></label>`).join("") || `<p class="muted" style="padding:8px;">没有匹配的 ambr。</p>`;
-  $("analysisUserDraftCount").textContent = `已选 ${state.userPickerDraft.size} / ${MAX_ANALYSIS_USERS}`;
+  $("analysisUserDraftCount").textContent = `已选 ${state.userPickerDraft.size} / 共 ${state.availableUsers.length}`;
 }
 
 function renderAnalysisUserPicker() {
@@ -1075,33 +1076,31 @@ function setAnalysisUserPickerOpen(open) {
 
 function selectVisibleAnalysisUsers() {
   const next = new Set(state.userPickerDraft);
-  for (const user of filteredAnalysisUsers()) {
-    if (next.size >= MAX_ANALYSIS_USERS) break;
-    next.add(user);
-  }
+  for (const user of filteredAnalysisUsers()) next.add(user);
   state.userPickerDraft = next;
   renderAnalysisUserOptions();
-  if (filteredAnalysisUsers().length > MAX_ANALYSIS_USERS) toast(`一次最多分析 ${MAX_ANALYSIS_USERS} 个用户。`);
 }
 
 async function applyAnalysisUsers() {
-  state.selectedUsers = new Set(sortedAnalysisUsers(state.userPickerDraft).slice(0, MAX_ANALYSIS_USERS));
+  state.selectedUsers = new Set(sortedAnalysisUsers(state.userPickerDraft));
+  plotSizeCustomized = false;
   const users = sortedAnalysisUsers();
   if (!users.includes(state.activeUser)) state.activeUser = users[0] || "__ALL__";
   renderAnalysisUserPicker();
   renderUserTabs();
+  renderChartFilterContext();
   markPlotsStale();
   setAnalysisUserPickerOpen(false);
-  toast(users.length ? `已选择 ${users.length} 个用户，当前显示 ambr ${state.activeUser}。` : "已切换为小区全量分析。");
+  toast(users.length ? `已选择 ${users.length} 个用户；图表将按用户逐行生成 A/B 分图。` : "已切换为小区全量分析。");
   if (state.lastMetrics.length) await startPlot();
 }
 
 function renderUserTabs() {
   const users = sortedAnalysisUsers();
-  if (state.activeUser !== "__ALL__" && !state.selectedUsers.has(state.activeUser)) state.activeUser = "__ALL__";
-  const values = ["__ALL__", ...users];
+  const values = users.length ? users : ["__ALL__"];
+  if (!values.includes(state.activeUser)) state.activeUser = values[0];
   const html = values.map((user) => `<button type="button" data-user="${escapeHtml(user)}" class="${user === state.activeUser ? "active" : ""}">${user === "__ALL__" ? "小区全量" : `ambr ${escapeHtml(user)}`}</button>`).join("");
-  for (const id of ["userTabs", "chartUserTabs"]) if ($(id)) $(id).innerHTML = html;
+  if ($("userTabs")) $("userTabs").innerHTML = html;
 }
 
 function filterText(item) {
@@ -1122,12 +1121,34 @@ function renderFilterChips() {
     ? filters.map((item) => `<span class="filter-chip active-column">${escapeHtml(filterText(item))}<button type="button" data-filter-column="${escapeHtml(item.column)}" aria-label="清除 ${escapeHtml(item.column)} 筛选">×</button></span>`).join("")
     : `<span class="muted">点击任意列名进行排序、筛选或按 TTI 画图。</span>`;
   $("clearTableFiltersBtn").disabled = filters.length === 0 && !$("tableSearch").value.trim();
+  renderChartFilterContext();
   if (state.tableResult) renderMergedTable(state.tableResult);
+}
+
+function renderChartFilterContext() {
+  const box = $("chartFilterChips");
+  if (!box) return;
+  const filters = tableFilters();
+  const search = $("tableSearch")?.value.trim() || "";
+  const users = sortedAnalysisUsers();
+  const chips = [
+    `<span class="filter-chip context-chip">方案 A / B</span>`,
+    ...filters.map((item) => `<span class="filter-chip active-column">${escapeHtml(filterText(item))}</span>`),
+  ];
+  if (search) chips.push(`<span class="filter-chip active-column">全局搜索：${escapeHtml(search)}</span>`);
+  if (!users.length) {
+    chips.push(`<span class="filter-chip user-scope-chip">分析用户：小区全量</span>`);
+  } else {
+    const preview = users.slice(0, 4).join(", ");
+    chips.push(`<span class="filter-chip user-scope-chip" title="${escapeHtml(users.join(", "))}">分析用户：${escapeHtml(preview)}${users.length > 4 ? ` 等 ${users.length} 个` : ""}</span>`);
+  }
+  box.innerHTML = chips.join("");
 }
 
 function markPlotsStale() {
   state.figures = {};
   state.activeFigure = "";
+  state.metricSummaryRows = [];
   state.plotRenderToken += 1;
   $("figureTabs").innerHTML = "";
   $("analysisPlot").innerHTML = `<div class="empty-state">条件已变化，选择字段后重新生成图表。</div>`;
@@ -1177,15 +1198,18 @@ function togglePlotColumn(column, force) {
   renderMetricOptions();
 }
 
-function renderMetricSummary(rows) {
-  if (!rows?.length) {
+function renderMetricSummary(rows = null) {
+  if (Array.isArray(rows)) state.metricSummaryRows = rows;
+  const scope = state.activeUser === "__ALL__" ? "小区全量" : `ambr ${state.activeUser}`;
+  const visibleRows = (state.metricSummaryRows || []).filter((row) => (row.scope || "小区全量") === scope);
+  if (!visibleRows.length) {
     $("metricSummaryTable").innerHTML = `<div class="empty-state">暂无统计结果。</div>`;
     return;
   }
   const sideSummary = (row, side) => row.kind === "类别"
     ? `样本 ${formatNumber(row[`${side}_count`], 0)} · 唯一值 ${formatNumber(row[`${side}_unique`], 0)} · Top ${row[`${side}_top`] ?? "-"} (${formatNumber(row[`${side}_top_ratio`], 2)}%)`
     : `样本 ${formatNumber(row[`${side}_count`], 0)} · 均值 ${formatNumber(row[`${side}_mean`], 4)} · P50 ${formatNumber(row[`${side}_p50`], 4)} · P90 ${formatNumber(row[`${side}_p90`], 4)}`;
-  $("metricSummaryTable").innerHTML = `<table><thead><tr><th>字段</th><th>类型</th><th>方案 A</th><th>方案 B</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="mono">${escapeHtml(row.metric ?? "-")}</td><td>${escapeHtml(row.kind ?? "-")}</td><td>${escapeHtml(sideSummary(row, "A"))}</td><td>${escapeHtml(sideSummary(row, "B"))}</td></tr>`).join("")}</tbody></table>`;
+  $("metricSummaryTable").innerHTML = `<table><thead><tr><th>字段</th><th>类型</th><th>方案 A</th><th>方案 B</th></tr></thead><tbody>${visibleRows.map((row) => `<tr><td class="mono">${escapeHtml(row.metric ?? "-")}</td><td>${escapeHtml(row.kind ?? "-")}</td><td>${escapeHtml(sideSummary(row, "A"))}</td><td>${escapeHtml(sideSummary(row, "B"))}</td></tr>`).join("")}</tbody></table>`;
 }
 
 async function startPlot() {
@@ -1202,6 +1226,7 @@ async function startPlot() {
     const start = await api("/api/task/start", {
       action: "plot", session_id: state.sessionId, metrics, filters: plotFilters(),
       global_search: $("tableSearch").value.trim(),
+      user_values: sortedAnalysisUsers(),
     });
     const result = await pollTask(start.task_id, "plot", { progress: (task) => setProgress("plot", task) });
     if (generation !== state.generation) return;
@@ -1209,9 +1234,8 @@ async function startPlot() {
     state.activeFigure = Object.keys(state.figures)[0] || "";
     renderFigureTabs();
     renderMetricSummary(result.summary_rows || []);
-    const scopeLabel = state.activeUser !== "__ALL__"
-      ? `ambr ${state.activeUser}`
-      : "小区全量";
+    const userCount = sortedAnalysisUsers().length;
+    const scopeLabel = userCount ? `${userCount} 个用户（逐行 A/B 分图）` : "小区全量";
     setProgress("plot", { pct: 100, title: "图表已生成", detail: `当前对象：${scopeLabel}` });
     if ($("analysisCharts").classList.contains("active")) renderActiveFigure();
     toast("图表已更新。");
@@ -1244,6 +1268,7 @@ function renderActiveFigure() {
   const plot = $("analysisPlot");
   const figureKey = state.activeFigure;
   const renderToken = ++state.plotRenderToken;
+  fitPlotFrameToFigure(figure);
   if (plot.classList.contains("js-plotly-plot")) Plotly.purge(plot);
   plot.innerHTML = "";
   window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
@@ -1281,10 +1306,21 @@ function resizeVisiblePlot() {
   }
 }
 
+let plotSizeCustomized = false;
+
+function fitPlotFrameToFigure(figure) {
+  if (plotSizeCustomized) return;
+  const frame = $("plotResizeFrame");
+  const minimum = window.matchMedia("(max-width: 820px)").matches ? 430 : 560;
+  const requested = Number(figure?.layout?.height || minimum);
+  frame.style.height = `${Math.max(minimum, Math.min(6000, requested))}px`;
+}
+
 function resetPlotSize() {
   const frame = $("plotResizeFrame");
+  plotSizeCustomized = false;
   frame.style.removeProperty("width");
-  frame.style.removeProperty("height");
+  fitPlotFrameToFigure(state.figures[state.activeFigure]);
   window.setTimeout(resizeVisiblePlot, 0);
 }
 
@@ -1300,6 +1336,7 @@ function beginPlotResize(event) {
     width: rect.width,
     height: rect.height,
   };
+  plotSizeCustomized = true;
   event.currentTarget.setPointerCapture?.(event.pointerId);
   document.body.classList.add("plot-resizing");
   event.preventDefault();
@@ -1315,7 +1352,7 @@ function movePlotResize(event) {
     const width = Math.max(minWidth, Math.min(maxWidth, plotResizeState.width + event.clientX - plotResizeState.startX));
     frame.style.width = `${Math.round(width)}px`;
   }
-  const height = Math.max(320, Math.min(1600, plotResizeState.height + event.clientY - plotResizeState.startY));
+  const height = Math.max(320, Math.min(6000, plotResizeState.height + event.clientY - plotResizeState.startY));
   frame.style.height = `${Math.round(height)}px`;
   resizeVisiblePlot();
   event.preventDefault();
@@ -1693,6 +1730,8 @@ async function clearSessionCache() {
     state.activeUser = "__ALL__";
     state.lastMetrics = [];
     state.figures = {};
+    state.metricSummaryRows = [];
+    plotSizeCustomized = false;
     renderReadInsights();
     renderMergeInsights();
     renderAnalysisUserPicker();
@@ -1818,11 +1857,6 @@ function bindEvents() {
     const input = event.target.closest(".analysis-user-check");
     if (!input) return;
     if (input.checked) {
-      if (state.userPickerDraft.size >= MAX_ANALYSIS_USERS) {
-        input.checked = false;
-        toast(`一次最多分析 ${MAX_ANALYSIS_USERS} 个用户。`);
-        return;
-      }
       state.userPickerDraft.add(input.value);
     } else {
       state.userPickerDraft.delete(input.value);
@@ -1833,15 +1867,12 @@ function bindEvents() {
   $("clearAnalysisUsersBtn").addEventListener("click", () => { state.userPickerDraft.clear(); renderAnalysisUserOptions(); });
   $("applyAnalysisUsersBtn").addEventListener("click", applyAnalysisUsers);
 
-  for (const id of ["userTabs", "chartUserTabs"]) {
-    $(id).addEventListener("click", async (event) => {
-      const button = event.target.closest("[data-user]"); if (!button) return;
-      state.activeUser = button.dataset.user;
-      renderUserTabs();
-      markPlotsStale();
-      if (state.lastMetrics.length) await startPlot();
-    });
-  }
+  $("userTabs").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-user]"); if (!button) return;
+    state.activeUser = button.dataset.user;
+    renderUserTabs();
+    renderMetricSummary();
+  });
 
   $("activeFilterChips").addEventListener("click", async (event) => {
     const button = event.target.closest("[data-filter-column]");
@@ -1929,4 +1960,5 @@ function bindEvents() {
 }
 
 bindEvents();
+renderChartFilterContext();
 setInterval(pollMemoryStatus, 10000);

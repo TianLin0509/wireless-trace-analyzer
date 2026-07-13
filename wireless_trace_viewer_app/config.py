@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 
-APP_VERSION = "v0.17.1 Codex"
+APP_VERSION = "v0.17.2 Codex"
 APP_TITLE = f"无线外场 Trace A/B 分析台 {APP_VERSION}"
 
 HOST = os.environ.get("TRACE_HOST", "127.0.0.1")
@@ -31,6 +31,7 @@ TASK_MAX_ITEMS = 80
 MAX_PAGE_SIZE = 2000
 MAX_FILTER_UNIQUES = 500
 MAX_CHART_METRICS = 8
+MAX_CHART_USERS = max(1, int(os.environ.get("TRACE_MAX_CHART_USERS", "100")))
 MAX_CHART_POINTS = 3000
 MAX_CDF_POINTS = 1600
 

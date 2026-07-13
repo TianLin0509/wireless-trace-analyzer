@@ -298,8 +298,9 @@ def create_app() -> Flask:
                 metrics = [str(value) for value in (data.get("metrics") or [])]
                 filters = data.get("filters") or []
                 global_search = str(data.get("global_search") or "")
+                user_values = data.get("user_values") or []
                 worker = lambda task_id: run_plot_task(
-                    session, task_id, metrics, filters, global_search
+                    session, task_id, metrics, filters, global_search, user_values
                 )
             else:
                 raise ValueError(f"未知任务类型：{action or '空'}")
