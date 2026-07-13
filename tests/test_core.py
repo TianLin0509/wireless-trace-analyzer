@@ -21,7 +21,7 @@ from wireless_trace_viewer_app.queries import (
     query_rows,
     run_plot_task,
 )
-from wireless_trace_viewer_app.state import SESSIONS
+from wireless_trace_viewer_app.state import SESSIONS, TASKS
 
 
 def write_trace(root: Path, trace: str, timestamp: str, frame: pd.DataFrame, index: int = 0) -> Path:
@@ -111,11 +111,14 @@ def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
         assert ingest["phase"] == "read"
         assert ingest["sources"]["A537"]["rows"] == 3
         assert ingest["t396"]["cell_rate_b"] > ingest["t396"]["cell_rate_a"]
+        assert TASKS.get("test-ingest")["files"]["A537"]["path"] == sources["A537"]["path"]
 
         merged = run_merge_task(
             session,
             "test-merge",
-            selected_537=["tti", "crnti", "HH:MM:SS", "frm", "slotNo", "ambr", "schType", "suOrMuFlag", "jtMode", "cw0SuMcs", "tb0SchMcs", "schRank", "usrschpdschDrbData"],
+            # ambr is intentionally omitted: the merge engine must preserve the
+            # analysis user key even when it is hidden from interested columns.
+            selected_537=["tti", "crnti", "HH:MM:SS", "frm", "slotNo", "schType", "suOrMuFlag", "jtMode", "cw0SuMcs", "tb0SchMcs", "schRank", "usrschpdschDrbData"],
             selected_714=["crnti", "HH:MM:SS", "frm", "slotNum", "ack0", "retansNum0", "isMuFlag", "mcsOffset[0]", "compOlla"],
             row_limit=0,
         )

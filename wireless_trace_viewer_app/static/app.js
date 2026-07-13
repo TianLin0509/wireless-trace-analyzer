@@ -7,7 +7,9 @@ const state = {
   merge: null,
   t396: null,
   selectedColumns: { "537": new Set(), "714": new Set() },
+  availableUsers: [],
   selectedUsers: new Set(),
+  userPickerDraft: new Set(),
   columnFilters: {},
   visibleColumns: new Set(),
   activeUser: "__ALL__",
@@ -29,6 +31,7 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+const MAX_ANALYSIS_USERS = 20;
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -131,13 +134,30 @@ function catalogForSide(side) {
 function renderBatchSelect(select, selected, allowEmptyLabel, side) {
   const batches = catalogForSide(side).batches || [];
   select.innerHTML = `<option value="">${allowEmptyLabel}</option>` + batches.map((batch) => (
-    `<option value="${escapeHtml(batch.batch_id)}">${escapeHtml(batchLabel(batch))}</option>`
+    `<option value="${escapeHtml(batch.batch_id)}" title="${escapeHtml(batchPathTitle(side, batch))}">${escapeHtml(batchLabel(batch))}</option>`
   )).join("");
   select.value = selected || "";
+  updateBatchSelectTitle(side);
 }
 
 function selectedBatch(side, batchId) {
   return (catalogForSide(side).batches || []).find((batch) => String(batch.batch_id) === String(batchId));
+}
+
+function batchPathTitle(side, batch) {
+  if (!batch) return catalogForSide(side).root || state.catalog?.roots?.[side] || "";
+  const paths = [];
+  for (const trace of ["396", "537", "714"]) {
+    const selected = batch.traces?.[trace]?.selected;
+    if (selected?.path) paths.push(`T${trace}: ${selected.path}`);
+  }
+  return paths.join("\n");
+}
+
+function updateBatchSelectTitle(side) {
+  const select = $(`scheme${side}`);
+  if (!select) return;
+  select.title = batchPathTitle(side, selectedBatch(side, select.value));
 }
 
 function renderSchemeScanStats(side) {
@@ -148,6 +168,7 @@ function renderSchemeScanStats(side) {
   const batchCount = Number(catalog.batch_count || 0);
   const fileCount = Number(catalog.file_count || 0);
   batchField.classList.toggle("hidden", batchCount === 0);
+  stats.title = root;
   if (!root) {
     stats.textContent = "未指定目录";
   } else if (!fileCount) {
@@ -166,18 +187,13 @@ function renderBatchSummary() {
   const values = { A: $("schemeA").value, B: $("schemeB").value };
   const parts = [];
   for (const side of ["A", "B"]) {
+    updateBatchSelectTitle(side);
     const batch = selectedBatch(side, values[side]);
     if (!batch) {
       parts.push(`<span class="batch-pill"><b>方案 ${side}</b>：空</span>`);
       continue;
     }
-    const files = [];
-    for (const trace of ["396", "537", "714"]) {
-      const info = batch.traces?.[trace];
-      if (info?.selected) files.push(`T${trace} ${info.selected.name}`);
-    }
-    const root = catalogForSide(side).root || state.catalog?.roots?.[side] || "";
-    parts.push(`<span class="batch-pill" title="${escapeHtml([root, ...files].filter(Boolean).join("\n"))}"><b>方案 ${side}</b>：${escapeHtml(batch.test_time_short)} · ${batch.available_count} 个跟踪</span>`);
+    parts.push(`<span class="batch-pill" title="${escapeHtml(batchPathTitle(side, batch))}"><b>方案 ${side}</b>：${escapeHtml(batch.test_time_short)} · ${batch.available_count} 个跟踪</span>`);
   }
   $("batchSummary").innerHTML = parts.join("");
   $("batchSummary").classList.remove("hidden");
@@ -202,12 +218,17 @@ async function scanDirectory() {
     state.schemas = {};
     state.merge = null;
     state.t396 = null;
+    state.availableUsers = [];
     state.selectedUsers.clear();
+    state.userPickerDraft.clear();
+    state.activeUser = "__ALL__";
     state.columnFilters = {};
     state.visibleColumns = new Set();
     state.lastMetrics = [];
     state.figures = {};
     state.activeFigure = "";
+    renderAnalysisUserPicker();
+    setAnalysisUserPickerOpen(false);
     renderBatchSelect($("schemeA"), data.selection?.A, "方案 A 留空", "A");
     renderBatchSelect($("schemeB"), data.selection?.B, "方案 B 留空", "B");
     renderSchemeScanStats("A");
@@ -273,7 +294,7 @@ function renderReadTask(task) {
   const rows = Object.entries(task.files || {}).sort(([left], [right]) => left.localeCompare(right)).map(([key, file]) => {
     const pct = Math.max(0, Math.min(100, Number(file.pct || 0)));
     const status = file.status === "ready" ? "完成" : file.status === "error" ? "失败" : file.status === "reading" ? "读取中" : "排队";
-    return `<tr><td title="${escapeHtml(file.name)}">${escapeHtml(file.name || key)}</td><td class="mono">${escapeHtml(file.side || key[0])} / T${escapeHtml(file.trace_id || key.slice(1))}</td><td><div class="mini-progress"><i style="width:${pct}%"></i></div></td><td class="mono">${formatNumber(file.rows || 0, 0)}</td><td>${status}</td></tr>`;
+    return `<tr><td title="${escapeHtml(file.path || file.name || "")}">${escapeHtml(file.name || key)}</td><td class="mono">${escapeHtml(file.side || key[0])} / T${escapeHtml(file.trace_id || key.slice(1))}</td><td><div class="mini-progress"><i style="width:${pct}%"></i></div></td><td class="mono">${formatNumber(file.rows || 0, 0)}</td><td>${status}</td></tr>`;
   }).join("");
   $("readFileRows").innerHTML = rows || `<tr><td colspan="5">正在建立任务...</td></tr>`;
 }
@@ -394,7 +415,10 @@ function handoffT396Users() {
   const users = $$(".t396-user-check:checked").map((item) => item.value);
   if (!users.length) { toast("请先勾选至少一个 T396 用户。"); return; }
   state.columnFilters.ambr = { column: "ambr", op: "in", value: users };
-  syncUsersFromAmbrFilter();
+  state.selectedUsers = new Set(users.map(String));
+  state.userPickerDraft = new Set(state.selectedUsers);
+  state.activeUser = users[0];
+  renderAnalysisUserPicker();
   renderUserTabs();
   if (state.merge) {
     goStep(3);
@@ -430,7 +454,7 @@ async function startMerge() {
     state.lastMetrics = (result.default_metrics || []).slice(0, 4);
     renderColumnVisibilityOptions();
     updateVisibleColumnCount();
-    syncUsersFromAmbrFilter();
+    await loadAnalysisUsers();
     renderMetricOptions();
     renderUserTabs();
     renderFilterChips();
@@ -474,7 +498,7 @@ function tableFilters() {
 
 function plotFilters() {
   const filters = tableFilters();
-  if (!state.selectedUsers.size || state.activeUser === "__ALL__") return filters;
+  if (state.activeUser === "__ALL__") return filters;
   return filters.filter((item) => item.column !== "ambr").concat([
     { column: "ambr", op: "eq", value: state.activeUser },
   ]);
@@ -485,15 +509,111 @@ function syncUsersFromAmbrFilter() {
   let users = [];
   if (filter?.op === "in" && Array.isArray(filter.value)) users = filter.value;
   else if (filter?.op === "eq" || filter?.op === "eq_num") users = [filter.value];
-  state.selectedUsers = new Set(users.map(String).filter(Boolean));
-  if (state.activeUser !== "__ALL__" && !state.selectedUsers.has(state.activeUser)) state.activeUser = "__ALL__";
+  state.selectedUsers = new Set(users.map(String).filter(Boolean).slice(0, MAX_ANALYSIS_USERS));
+  state.userPickerDraft = new Set(state.selectedUsers);
+  const sorted = sortedAnalysisUsers(state.selectedUsers);
+  state.activeUser = sorted[0] || "__ALL__";
+  renderAnalysisUserPicker();
+}
+
+function sortedAnalysisUsers(values = state.selectedUsers) {
+  return Array.from(values || []).map(String).sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
+}
+
+async function loadAnalysisUsers() {
+  if (!state.sessionId || !state.merge) {
+    state.availableUsers = [];
+    renderAnalysisUserPicker();
+    return;
+  }
+  let data;
+  try {
+    data = await api(`/api/session/${state.sessionId}/filter-options`, { column: "ambr" });
+  } catch (error) {
+    state.availableUsers = [];
+    renderAnalysisUserPicker();
+    toast(`用户选项加载失败：${error.message}`);
+    return;
+  }
+  state.availableUsers = Array.from(new Set((data.options?.ambr || []).map(String).filter(Boolean)));
+  const valid = new Set(state.availableUsers);
+  state.selectedUsers = new Set(sortedAnalysisUsers(state.selectedUsers).filter((user) => valid.has(user)).slice(0, MAX_ANALYSIS_USERS));
+  state.userPickerDraft = new Set(state.selectedUsers);
+  if (state.activeUser !== "__ALL__" && !state.selectedUsers.has(state.activeUser)) {
+    state.activeUser = sortedAnalysisUsers()[0] || "__ALL__";
+  }
+  renderAnalysisUserPicker();
+}
+
+function filteredAnalysisUsers() {
+  const query = ($("analysisUserSearch")?.value || "").trim().toLowerCase();
+  return state.availableUsers.filter((user) => !query || user.toLowerCase().includes(query));
+}
+
+function renderAnalysisUserOptions() {
+  const box = $("analysisUserOptions");
+  if (!box) return;
+  const users = filteredAnalysisUsers();
+  box.innerHTML = users.map((user) => `<label class="analysis-user-option" title="ambr ${escapeHtml(user)}"><input type="checkbox" class="analysis-user-check" value="${escapeHtml(user)}" ${state.userPickerDraft.has(user) ? "checked" : ""}><span>${escapeHtml(user)}</span></label>`).join("") || `<p class="muted" style="padding:8px;">没有匹配的 ambr。</p>`;
+  $("analysisUserDraftCount").textContent = `已选 ${state.userPickerDraft.size} / ${MAX_ANALYSIS_USERS}`;
+}
+
+function renderAnalysisUserPicker() {
+  const button = $("analysisUserPickerBtn");
+  if (!button) return;
+  const count = state.selectedUsers.size;
+  button.disabled = !state.merge || state.availableUsers.length === 0;
+  $("analysisUserPickerLabel").textContent = !state.merge
+    ? "等待数据汇总"
+    : !state.availableUsers.length
+      ? "汇总数据没有 ambr"
+      : count
+        ? `已选择 ${count} 个用户`
+        : "选择分析用户（ambr）";
+  renderAnalysisUserOptions();
+}
+
+function setAnalysisUserPickerOpen(open) {
+  const menu = $("analysisUserPickerMenu");
+  const button = $("analysisUserPickerBtn");
+  if (!menu || !button || (open && button.disabled)) return;
+  if (open) {
+    state.userPickerDraft = new Set(state.selectedUsers);
+    $("analysisUserSearch").value = "";
+    renderAnalysisUserOptions();
+  }
+  menu.classList.toggle("hidden", !open);
+  button.setAttribute("aria-expanded", String(open));
+}
+
+function selectVisibleAnalysisUsers() {
+  const next = new Set(state.userPickerDraft);
+  for (const user of filteredAnalysisUsers()) {
+    if (next.size >= MAX_ANALYSIS_USERS) break;
+    next.add(user);
+  }
+  state.userPickerDraft = next;
+  renderAnalysisUserOptions();
+  if (filteredAnalysisUsers().length > MAX_ANALYSIS_USERS) toast(`一次最多分析 ${MAX_ANALYSIS_USERS} 个用户。`);
+}
+
+async function applyAnalysisUsers() {
+  state.selectedUsers = new Set(sortedAnalysisUsers(state.userPickerDraft).slice(0, MAX_ANALYSIS_USERS));
+  const users = sortedAnalysisUsers();
+  if (!users.includes(state.activeUser)) state.activeUser = users[0] || "__ALL__";
+  renderAnalysisUserPicker();
+  renderUserTabs();
+  markPlotsStale();
+  setAnalysisUserPickerOpen(false);
+  toast(users.length ? `已选择 ${users.length} 个用户，当前显示 ambr ${state.activeUser}。` : "已切换为小区全量分析。");
+  if (state.lastMetrics.length) await startPlot();
 }
 
 function renderUserTabs() {
-  const users = Array.from(state.selectedUsers).sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
+  const users = sortedAnalysisUsers();
+  if (state.activeUser !== "__ALL__" && !state.selectedUsers.has(state.activeUser)) state.activeUser = "__ALL__";
   const values = ["__ALL__", ...users];
-  const allLabel = users.length ? `已选用户汇总 (${users.length})` : "小区全量";
-  const html = values.map((user) => `<button type="button" data-user="${escapeHtml(user)}" class="${user === state.activeUser ? "active" : ""}">${user === "__ALL__" ? allLabel : `ambr ${escapeHtml(user)}`}</button>`).join("");
+  const html = values.map((user) => `<button type="button" data-user="${escapeHtml(user)}" class="${user === state.activeUser ? "active" : ""}">${user === "__ALL__" ? "小区全量" : `ambr ${escapeHtml(user)}`}</button>`).join("");
   for (const id of ["userTabs", "chartUserTabs"]) if ($(id)) $(id).innerHTML = html;
 }
 
@@ -529,8 +649,6 @@ function markPlotsStale() {
 
 async function removeColumnFilter(column) {
   delete state.columnFilters[column];
-  syncUsersFromAmbrFilter();
-  renderUserTabs();
   renderFilterChips();
   markPlotsStale();
   await queryTable(1);
@@ -538,12 +656,9 @@ async function removeColumnFilter(column) {
 
 async function clearAllTableConditions() {
   state.columnFilters = {};
-  state.selectedUsers.clear();
-  state.activeUser = "__ALL__";
   $("tableSearch").value = "";
   state.sortColumn = "";
   state.sortAscending = true;
-  renderUserTabs();
   renderFilterChips();
   markPlotsStale();
   closeColumnMenu();
@@ -609,7 +724,7 @@ async function startPlot() {
     renderMetricSummary(result.summary_rows || []);
     const scopeLabel = state.activeUser !== "__ALL__"
       ? `ambr ${state.activeUser}`
-      : state.selectedUsers.size ? `已选 ${state.selectedUsers.size} 个用户汇总` : "小区全量";
+      : "小区全量";
     setProgress("plot", { pct: 100, title: "图表已生成", detail: `当前对象：${scopeLabel}` });
     if ($("analysisCharts").classList.contains("active")) renderActiveFigure();
     toast("图表已更新。");
@@ -825,7 +940,7 @@ function renderColumnMenu(refocusSearch = false) {
 
 async function applyColumnFilter(column, filter) {
   state.columnFilters[column] = { column, ...filter };
-  syncUsersFromAmbrFilter();
+  if (column === "ambr") syncUsersFromAmbrFilter();
   renderUserTabs();
   renderFilterChips();
   markPlotsStale();
@@ -992,10 +1107,15 @@ async function clearSessionCache() {
     state.schemas = {};
     state.columnFilters = {};
     state.visibleColumns = new Set();
+    state.availableUsers = [];
     state.selectedUsers.clear();
+    state.userPickerDraft.clear();
     state.activeUser = "__ALL__";
     state.lastMetrics = [];
     state.figures = {};
+    renderAnalysisUserPicker();
+    renderUserTabs();
+    setAnalysisUserPickerOpen(false);
     closeColumnMenu();
     setColumnVisibilityOpen(false);
     $("cacheSummary").textContent = "0 B";
@@ -1044,6 +1164,30 @@ function bindEvents() {
   $("mergeBtn").addEventListener("click", startMerge);
   $("t396Table").addEventListener("change", () => { $("handoffUsersBtn").disabled = !document.querySelector(".t396-user-check:checked"); });
   $("handoffUsersBtn").addEventListener("click", handoffT396Users);
+  $("analysisUserPickerBtn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    setAnalysisUserPickerOpen($("analysisUserPickerMenu").classList.contains("hidden"));
+  });
+  $("analysisUserPickerMenu").addEventListener("click", (event) => event.stopPropagation());
+  $("analysisUserSearch").addEventListener("input", renderAnalysisUserOptions);
+  $("analysisUserOptions").addEventListener("change", (event) => {
+    const input = event.target.closest(".analysis-user-check");
+    if (!input) return;
+    if (input.checked) {
+      if (state.userPickerDraft.size >= MAX_ANALYSIS_USERS) {
+        input.checked = false;
+        toast(`一次最多分析 ${MAX_ANALYSIS_USERS} 个用户。`);
+        return;
+      }
+      state.userPickerDraft.add(input.value);
+    } else {
+      state.userPickerDraft.delete(input.value);
+    }
+    renderAnalysisUserOptions();
+  });
+  $("selectVisibleUsersBtn").addEventListener("click", selectVisibleAnalysisUsers);
+  $("clearAnalysisUsersBtn").addEventListener("click", () => { state.userPickerDraft.clear(); renderAnalysisUserOptions(); });
+  $("applyAnalysisUsersBtn").addEventListener("click", applyAnalysisUsers);
 
   for (const id of ["userTabs", "chartUserTabs"]) {
     $(id).addEventListener("click", async (event) => {
@@ -1125,9 +1269,10 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     if (!event.target.closest("#columnVisibilityMenu, #columnVisibilityBtn")) setColumnVisibilityOpen(false);
     if (!event.target.closest("#columnMenu, [data-column-menu]")) closeColumnMenu();
+    if (!event.target.closest("#analysisUserPicker")) setAnalysisUserPickerOpen(false);
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { closeColumnMenu(); setColumnVisibilityOpen(false); }
+    if (event.key === "Escape") { closeColumnMenu(); setColumnVisibilityOpen(false); setAnalysisUserPickerOpen(false); }
   });
   $("exportBtn").addEventListener("click", exportCsv);
   $("clearCacheBtn").addEventListener("click", clearSessionCache);

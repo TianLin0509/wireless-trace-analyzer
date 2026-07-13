@@ -418,6 +418,7 @@ def run_ingest_task(
             pct=0,
             rows=0,
             name=source.get("name"),
+            path=source.get("path"),
             size=source.get("size"),
             trace_id=source.get("trace_id"),
             side=source.get("side"),
@@ -559,6 +560,11 @@ def merge_side(
     for key_column in key_mapping_537.values():
         if key_column in columns_537 and key_column not in selected_537:
             selected_537.insert(0, key_column)
+    # ambr is the analysis user key. Keep it in the merged table even when the
+    # user hides it from the interested-column list so user-level plots remain
+    # available without forcing another full merge.
+    if "ambr" in columns_537 and "ambr" not in selected_537:
+        selected_537.append("ambr")
 
     anchor_select = ["a.__source_row", *[f"a.{quote_ident(column)}" for column in KEY_INTERNAL_COLUMNS]]
     anchor_select.extend(
