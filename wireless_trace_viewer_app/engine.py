@@ -560,11 +560,12 @@ def merge_side(
     for key_column in key_mapping_537.values():
         if key_column in columns_537 and key_column not in selected_537:
             selected_537.insert(0, key_column)
-    # ambr is the analysis user key. Keep it in the merged table even when the
-    # user hides it from the interested-column list so user-level plots remain
-    # available without forcing another full merge.
-    if "ambr" in columns_537 and "ambr" not in selected_537:
-        selected_537.append("ambr")
+    # TTI and ambr are downstream analysis axes. Keep them even when they are
+    # hidden from the interested-column list so quick plots remain available
+    # without forcing another full merge.
+    for analysis_column in ("tti", "ambr"):
+        if analysis_column in columns_537 and analysis_column not in selected_537:
+            selected_537.append(analysis_column)
 
     anchor_select = ["a.__source_row", *[f"a.{quote_ident(column)}" for column in KEY_INTERNAL_COLUMNS]]
     anchor_select.extend(

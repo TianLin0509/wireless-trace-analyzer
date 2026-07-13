@@ -3,6 +3,7 @@
 const state = {
   sessionId: "",
   catalog: null,
+  ingest: null,
   schemas: {},
   merge: null,
   t396: null,
@@ -215,6 +216,7 @@ async function scanDirectory() {
     Object.keys(state.taskTokens).forEach((key) => { state.taskTokens[key] += 1; });
     state.sessionId = data.session_id;
     state.catalog = data.catalog;
+    state.ingest = null;
     state.schemas = {};
     state.merge = null;
     state.t396 = null;
@@ -227,6 +229,8 @@ async function scanDirectory() {
     state.lastMetrics = [];
     state.figures = {};
     state.activeFigure = "";
+    renderReadInsights();
+    renderMergeInsights();
     renderAnalysisUserPicker();
     setAnalysisUserPickerOpen(false);
     renderBatchSelect($("schemeA"), data.selection?.A, "方案 A 留空", "A");
@@ -331,17 +335,27 @@ async function startAnalysis() {
   setBadge("readStateBadge", "读取中", "running");
   setStepEnabled(2, false);
   setStepEnabled(3, false);
+  state.ingest = null;
+  state.merge = null;
+  state.schemas = {};
+  state.t396 = null;
+  state.selectedColumns = { "537": new Set(), "714": new Set() };
+  renderReadInsights();
+  renderMergeInsights();
   goStep(1);
   toggleSource(true);
   try {
     const start = await api("/api/task/start", { action: "ingest", session_id: state.sessionId, selection });
     const result = await pollTask(start.task_id, "ingest", { progress: renderReadTask });
+    state.ingest = result;
     state.schemas = result.schemas || {};
     state.t396 = result.t396 || {};
     setProgress("read", { pct: 100, title: "读取完成", detail: "全部可用跟踪已写入磁盘缓存。" });
     setBadge("readStateBadge", "读取完成", "ready");
     renderColumnConfig();
     renderT396();
+    renderReadInsights();
+    renderMergeInsights();
     setStepEnabled(2, true);
     goStep(2);
     toast("读取完成，请确认汇总字段。");
@@ -377,6 +391,7 @@ function renderColumnConfig() {
     state.selectedColumns[trace] = new Set(defaults);
     renderColumnList(trace);
   }
+  renderMergeInsights();
 }
 
 function bulkColumns(trace, mode) {
@@ -384,10 +399,108 @@ function bulkColumns(trace, mode) {
   const values = mode === "default" ? (schema.default_columns || []) : mode === "all" ? (schema.columns || []) : [];
   state.selectedColumns[trace] = new Set(values);
   renderColumnList(trace);
+  renderMergeInsights();
 }
 
 function statItems(items) {
   return items.map(([label, value, title = ""]) => `<div class="stat-item" title="${escapeHtml(title || value)}"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>`).join("");
+}
+
+function briefItems(items) {
+  return items.map(([label, value, title = ""]) => `<div class="brief-metric" title="${escapeHtml(title || value)}"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>`).join("");
+}
+
+function sourceSide(sourceKey, source) {
+  return String(source?.side || source?.scheme || sourceKey?.[0] || "").toUpperCase();
+}
+
+function sourceTrace(sourceKey, source) {
+  return String(source?.trace_id || String(sourceKey || "").slice(1));
+}
+
+function renderReadInsights() {
+  const sources = state.ingest?.sources || {};
+  const entries = Object.entries(sources);
+  const box = $("readInsights");
+  if (!entries.length) { box.classList.add("hidden"); return; }
+  const totalRows = entries.reduce((sum, [, source]) => sum + Number(source.rows || 0), 0);
+  const csvBytes = entries.reduce((sum, [, source]) => sum + Number(source.size || 0), 0);
+  const cacheBytes = entries.reduce((sum, [, source]) => sum + Number(source.database_bytes || 0), 0);
+  const fields537 = Number(state.schemas?.["537"]?.columns?.length || 0);
+  const fields714 = Number(state.schemas?.["714"]?.columns?.length || 0);
+  $("readInsightMetrics").innerHTML = briefItems([
+    ["已读取数据源", `${entries.length} 个`],
+    ["累计数据行", formatNumber(totalRows, 0)],
+    ["CSV / 磁盘缓存", `${formatBytes(csvBytes)} / ${formatBytes(cacheBytes)}`],
+    ["字段规模", `T537 ${fields537} · T714 ${fields714}`],
+  ]);
+
+  const notes = [];
+  for (const side of ["A", "B"]) {
+    const sideEntries = entries.filter(([key, source]) => sourceSide(key, source) === side);
+    if (!sideEntries.length) { notes.push(`方案 ${side} 为空`); continue; }
+    const traces = new Set(sideEntries.map(([key, source]) => sourceTrace(key, source)));
+    const missing = ["396", "537", "714"].filter((trace) => !traces.has(trace));
+    notes.push(`方案 ${side} ${missing.length ? `缺少 T${missing.join(" / T")}` : "三类跟踪齐全"}`);
+  }
+  for (const trace of ["537", "714"]) {
+    const columnsA = new Set(sources[`A${trace}`]?.columns || []);
+    const columnsB = new Set(sources[`B${trace}`]?.columns || []);
+    if (!columnsA.size || !columnsB.size) continue;
+    const difference = new Set([...columnsA].filter((column) => !columnsB.has(column)).concat([...columnsB].filter((column) => !columnsA.has(column))));
+    notes.push(`T${trace} A/B 字段${difference.size ? `相差 ${difference.size} 个` : "一致"}`);
+  }
+  const largest = entries.reduce((best, current) => Number(current[1].rows || 0) > Number(best?.[1]?.rows || -1) ? current : best, null);
+  if (largest) notes.push(`最大数据源 ${largest[0]}：${formatNumber(largest[1].rows, 0)} 行`);
+  $("readInsightNote").textContent = notes.join(" · ");
+  box.classList.remove("hidden");
+}
+
+function renderMergeInsights() {
+  const box = $("mergeInsights");
+  const schema537 = state.schemas?.["537"] || {};
+  if (!(schema537.columns || []).length) { box.classList.add("hidden"); return; }
+
+  if (!state.merge) {
+    const sources = state.ingest?.sources || {};
+    const availableSides = ["A", "B"].filter((side) => sources[`${side}537`]);
+    const rowScope = $("limitRowsCheck").checked
+      ? `前 ${formatNumber(Math.max(1, Number($("rowLimitInput").value || 100000)), 0)} 行`
+      : "全量";
+    $("mergeInsightMetrics").innerHTML = briefItems([
+      ["T537 已选字段", `${state.selectedColumns["537"].size} / ${(schema537.columns || []).length}`],
+      ["T714 已选字段", `${state.selectedColumns["714"].size} / ${(state.schemas?.["714"]?.columns || []).length}`],
+      ["T537 锚点范围", rowScope],
+      ["可汇总方案", availableSides.length ? availableSides.join(" / ") : "无 T537"],
+    ]);
+    const missing714 = availableSides.filter((side) => !sources[`${side}714`]);
+    $("mergeInsightNote").textContent = missing714.length
+      ? `方案 ${missing714.join(" / ")} 缺少 T714，对应链路字段将标记为 NaN；tti、ambr 与连接键会自动保留。`
+      : "tti、ambr 与连接键会自动保留；T714 字段添加 714_ 前缀，未匹配行标记为 NaN。";
+    box.classList.remove("hidden");
+    return;
+  }
+
+  const sides = state.merge.sides || {};
+  const available = ["A", "B"].filter((side) => sides[side]);
+  const totalNan = available.reduce((sum, side) => sum + Number(sides[side].nan_rows || 0), 0);
+  const duplicateKeys = available.reduce((sum, side) => sum + Number(sides[side].duplicate_714_keys || 0), 0);
+  const matchText = available.map((side) => `${side} ${formatNumber(sides[side].match_rate, 2)}%`).join(" · ") || "-";
+  $("mergeInsightMetrics").innerHTML = briefItems([
+    ["714 匹配率", matchText],
+    ["未匹配锚点行", formatNumber(totalNan, 0)],
+    ["重复连接键", formatNumber(duplicateKeys, 0)],
+    ["输出 / 数值字段", `${(state.merge.common_columns || []).length} / ${(state.merge.numeric_columns || []).length}`],
+  ]);
+  const notes = [];
+  for (const side of available) {
+    const current = sides[side];
+    if (!current.has_714) notes.push(`方案 ${side} 无 T714，链路字段均为 NaN`);
+    else if (Number(current.nan_rows || 0) > 0) notes.push(`方案 ${side} 有 ${formatNumber(current.nan_rows, 0)} 行未匹配`);
+    if (Number(current.duplicate_714_keys || 0) > 0) notes.push(`方案 ${side} 有 ${formatNumber(current.duplicate_714_keys, 0)} 组重复连接键，取原始首行`);
+  }
+  $("mergeInsightNote").textContent = notes.length ? notes.join(" · ") : "连接键唯一，当前 T714 数据已全部匹配。";
+  box.classList.remove("hidden");
 }
 
 function renderT396() {
@@ -441,6 +554,9 @@ async function startMerge() {
   setBusy($("mergeBtn"), true, "合并中...");
   $("mergeProgress").classList.remove("hidden");
   setBadge("mergeStateBadge", "汇总中", "running");
+  setStepEnabled(3, false);
+  state.merge = null;
+  renderMergeInsights();
   try {
     const start = await api("/api/task/start", {
       action: "merge", session_id: state.sessionId, columns_537: columns537, columns_714: columns714, row_limit: rowLimit,
@@ -449,6 +565,7 @@ async function startMerge() {
     state.merge = result;
     setProgress("merge", { pct: 100, title: "汇总完成", detail: "A/B 汇总表已写入 DuckDB。" });
     setBadge("mergeStateBadge", "汇总完成", "ready");
+    renderMergeInsights();
     renderMergeStats();
     state.visibleColumns = new Set(defaultVisibleColumns());
     state.lastMetrics = (result.default_metrics || []).slice(0, 4);
@@ -462,7 +579,7 @@ async function startMerge() {
     goStep(3);
     showAnalysisTab("table");
     await queryTable(1);
-    toast("数据汇总完成，可从列头箭头开始排序、筛选或选列画图。");
+    toast("数据汇总完成，点击列名即可排序、筛选或按 TTI 画图。");
     pollMemoryStatus();
   } catch (error) {
     if (error.superseded) return;
@@ -633,7 +750,7 @@ function renderFilterChips() {
   const filters = tableFilters();
   $("activeFilterChips").innerHTML = filters.length
     ? filters.map((item) => `<span class="filter-chip active-column">${escapeHtml(filterText(item))}<button type="button" data-filter-column="${escapeHtml(item.column)}" aria-label="清除 ${escapeHtml(item.column)} 筛选">×</button></span>`).join("")
-    : `<span class="muted">点击任意列名右侧箭头进行排序或筛选。</span>`;
+    : `<span class="muted">点击任意列名进行排序、筛选或按 TTI 画图。</span>`;
   $("clearTableFiltersBtn").disabled = filters.length === 0 && !$("tableSearch").value.trim();
   if (state.tableResult) renderMergedTable(state.tableResult);
 }
@@ -738,7 +855,7 @@ async function startPlot() {
 }
 
 async function quickPlotFromTable() {
-  if (!state.lastMetrics.length) { toast("先点击一个或多个列名选中绘图字段。"); return; }
+  if (!state.lastMetrics.length) { toast("请先在列菜单中加入绘图字段。"); return; }
   renderMetricOptions();
   showAnalysisTab("charts");
   await startPlot();
@@ -761,7 +878,26 @@ function renderActiveFigure() {
   plot.innerHTML = "";
   window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
     if (renderToken !== state.plotRenderToken || state.activeFigure !== figureKey || !$("analysisCharts").classList.contains("active")) return;
-    Plotly.newPlot(plot, figure.data || [], figure.layout || {}, {
+    const layout = typeof structuredClone === "function"
+      ? structuredClone(figure.layout || {})
+      : JSON.parse(JSON.stringify(figure.layout || {}));
+    layout.autosize = true;
+    delete layout.width;
+    delete layout.height;
+    if (window.matchMedia("(max-width: 820px)").matches) {
+      layout.showlegend = false;
+      const title = typeof layout.title === "string" ? { text: layout.title } : { ...(layout.title || {}) };
+      title.font = { ...(title.font || {}), size: 15 };
+      title.x = 0.5;
+      title.xanchor = "center";
+      layout.title = title;
+      layout.annotations = (layout.annotations || []).map((annotation) => ({
+        ...annotation,
+        font: { ...(annotation.font || {}), size: 11 },
+      }));
+      layout.margin = { ...(layout.margin || {}), l: 48, r: 18, t: 78, b: 48 };
+    }
+    Plotly.newPlot(plot, figure.data || [], layout, {
       responsive: true,
       displaylogo: false,
       modeBarButtonsToRemove: ["lasso2d", "select2d"],
@@ -773,6 +909,53 @@ function resizeVisiblePlot() {
   if ($("analysisCharts").classList.contains("active") && state.activeFigure && $("analysisPlot").data) {
     Plotly.Plots.resize($("analysisPlot"));
   }
+}
+
+function resetPlotSize() {
+  const frame = $("plotResizeFrame");
+  frame.style.removeProperty("width");
+  frame.style.removeProperty("height");
+  window.setTimeout(resizeVisiblePlot, 0);
+}
+
+let plotResizeState = null;
+function beginPlotResize(event) {
+  if (event.button !== 0) return;
+  const frame = $("plotResizeFrame");
+  const rect = frame.getBoundingClientRect();
+  plotResizeState = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    width: rect.width,
+    height: rect.height,
+  };
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+  document.body.classList.add("plot-resizing");
+  event.preventDefault();
+}
+
+function movePlotResize(event) {
+  if (!plotResizeState || event.pointerId !== plotResizeState.pointerId) return;
+  const frame = $("plotResizeFrame");
+  const mobile = window.matchMedia("(max-width: 820px)").matches;
+  if (!mobile) {
+    const maxWidth = Math.max(280, frame.parentElement.getBoundingClientRect().width);
+    const minWidth = Math.min(420, maxWidth);
+    const width = Math.max(minWidth, Math.min(maxWidth, plotResizeState.width + event.clientX - plotResizeState.startX));
+    frame.style.width = `${Math.round(width)}px`;
+  }
+  const height = Math.max(320, Math.min(1600, plotResizeState.height + event.clientY - plotResizeState.startY));
+  frame.style.height = `${Math.round(height)}px`;
+  resizeVisiblePlot();
+  event.preventDefault();
+}
+
+function endPlotResize(event) {
+  if (!plotResizeState || event.pointerId !== plotResizeState.pointerId) return;
+  plotResizeState = null;
+  document.body.classList.remove("plot-resizing");
+  resizeVisiblePlot();
 }
 
 function showAnalysisTab(name) {
@@ -909,6 +1092,12 @@ function renderColumnMenu(refocusSearch = false) {
   const column = state.columnMenu.column;
   if (!profile || !column) return;
   const isSelected = state.lastMetrics.includes(column);
+  const canPlotByTti = Boolean(profile.is_numeric && column !== "tti" && mergedColumns().includes("tti"));
+  const quickPlotTitle = canPlotByTti
+    ? `按 TTI 升序绘制 ${column}`
+    : profile.is_numeric
+      ? "当前汇总结果缺少 tti，无法生成 TTI 序列"
+      : "当前列不是数值字段，不能作为折线图纵轴";
   const stats = [
     ["当前行", formatNumber(profile.row_count, 0)],
     ["唯一值", formatNumber(profile.distinct_count, 0)],
@@ -927,6 +1116,7 @@ function renderColumnMenu(refocusSearch = false) {
   $("columnMenu").innerHTML = `
     <div class="column-menu-head"><div class="column-menu-title"><strong title="${escapeHtml(column)}">${escapeHtml(column)}</strong><span>${profile.is_identifier ? "标识字段" : profile.is_numeric ? "数值字段" : "类别字段"}</span></div><button type="button" class="column-menu-close" data-column-action="close" aria-label="关闭">×</button></div>
     <div class="column-profile-grid">${stats.map(([label, value]) => `<div class="column-profile-item"><span>${label}</span><b title="${escapeHtml(value)}">${escapeHtml(value)}</b></div>`).join("")}</div>
+    <button type="button" class="column-quick-plot" data-column-action="plot-tti" title="${escapeHtml(quickPlotTitle)}" ${canPlotByTti ? "" : "disabled"}>按 TTI 升序画图</button>
     <div class="column-menu-section"><h4>排序与分析</h4><div class="column-action-grid"><button type="button" data-column-action="sort-asc">升序排列</button><button type="button" data-column-action="sort-desc">降序排列</button><button type="button" class="${isSelected ? "active" : ""}" data-column-action="toggle-plot">${isSelected ? "移出绘图" : "加入绘图"}</button><button type="button" data-column-action="hide">隐藏此列</button></div></div>
     <div class="column-menu-section"><h4>条件筛选</h4>${conditionHtml}<div class="column-action-grid"><button type="button" data-column-action="only-null">仅看空值</button><button type="button" data-column-action="not-null">排除空值</button></div></div>
     <div class="column-menu-section"><div class="column-value-head"><h4>按取值筛选</h4><div class="column-value-actions"><button type="button" data-column-action="select-visible-values">全选显示</button><button type="button" data-column-action="clear-values">清空选择</button></div></div><input id="columnValueSearch" class="small-input" type="search" value="${escapeHtml(state.columnMenu.search)}" placeholder="搜索当前列取值"><div class="column-value-list">${valueRows}</div>${profile.has_more ? `<p class="column-menu-hint">当前只加载前 500 个取值，请搜索缩小范围；筛选仍在完整数据上执行。</p>` : ""}<button type="button" class="primary-btn full-width" style="margin-top:7px;" data-column-action="apply-values">仅看选中值</button></div>
@@ -957,6 +1147,16 @@ async function handleColumnAction(action) {
     state.sortAscending = action === "sort-asc";
     closeColumnMenu();
     await queryTable(1);
+    return;
+  }
+  if (action === "plot-tti") {
+    if (!state.columnMenu.profile?.is_numeric || column === "tti") { toast("请选择一个数值字段作为纵轴。"); return; }
+    if (!mergedColumns().includes("tti")) { toast("当前汇总结果缺少 tti，请重新汇总。"); return; }
+    state.lastMetrics = [column];
+    renderMetricOptions();
+    closeColumnMenu();
+    showAnalysisTab("charts");
+    await startPlot();
     return;
   }
   if (action === "toggle-plot") { togglePlotColumn(column); renderColumnMenu(); return; }
@@ -1043,7 +1243,7 @@ function renderMergedTable(data) {
     const selected = state.lastMetrics.includes(column);
     const filtered = Boolean(filters[column]);
     const sortMark = state.sortColumn === column ? (state.sortAscending ? "↑" : "↓") : "";
-    return `<th class="${selected ? "plot-selected" : ""} ${filtered ? "filtered" : ""}"><div class="column-head"><button type="button" class="column-label-button" data-toggle-plot="${escapeHtml(column)}" title="选中或取消绘图字段"><span class="column-name">${escapeHtml(column)}</span>${sortMark ? `<span class="sort-mark">${sortMark}</span>` : ""}</button><button type="button" class="column-menu-button" data-column-menu="${escapeHtml(column)}" aria-label="打开 ${escapeHtml(column)} 列操作"></button></div></th>`;
+    return `<th class="${selected ? "plot-selected" : ""} ${filtered ? "filtered" : ""}"><div class="column-head"><button type="button" class="column-label-button" data-column-menu="${escapeHtml(column)}" aria-haspopup="dialog" title="点击打开 ${escapeHtml(column)} 的排序、筛选与画图操作"><span class="column-name">${escapeHtml(column)}</span>${sortMark ? `<span class="sort-mark">${sortMark}</span>` : ""}</button></div></th>`;
   }).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((column) => `<td class="${state.lastMetrics.includes(column) ? "plot-column" : ""}">${escapeHtml(row[column] ?? "NaN")}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${Math.max(1, columns.length)}">当前条件没有匹配行。</td></tr>`}</tbody></table>`;
   $("tablePager").innerHTML = `<span>方案 ${escapeHtml(data.side)} · ${formatNumber(data.filtered_rows, 0)} / ${formatNumber(data.total_rows, 0)} 行 · 第 ${data.page} / ${data.total_pages} 页</span><div class="pager-buttons"><button type="button" data-page="1" ${data.page <= 1 ? "disabled" : ""}>首页</button><button type="button" data-page="${Math.max(1, data.page - 1)}" ${data.page <= 1 ? "disabled" : ""}>上一页</button><button type="button" data-page="${Math.min(data.total_pages, data.page + 1)}" ${data.page >= data.total_pages ? "disabled" : ""}>下一页</button><button type="button" data-page="${data.total_pages}" ${data.page >= data.total_pages ? "disabled" : ""}>末页</button></div>`;
 }
@@ -1103,6 +1303,7 @@ async function clearSessionCache() {
     state.plotRenderToken += 1;
     state.sessionId = "";
     state.catalog = null;
+    state.ingest = null;
     state.merge = null;
     state.schemas = {};
     state.columnFilters = {};
@@ -1113,6 +1314,8 @@ async function clearSessionCache() {
     state.activeUser = "__ALL__";
     state.lastMetrics = [];
     state.figures = {};
+    renderReadInsights();
+    renderMergeInsights();
     renderAnalysisUserPicker();
     renderUserTabs();
     setAnalysisUserPickerOpen(false);
@@ -1155,12 +1358,14 @@ function bindEvents() {
       if (!input) return;
       if (input.checked) state.selectedColumns[trace].add(input.dataset.column); else state.selectedColumns[trace].delete(input.dataset.column);
       selectedColumnCount(trace);
+      renderMergeInsights();
     });
   }
   $$('[data-bulk]').forEach((button) => button.addEventListener("click", () => {
     const [trace, mode] = button.dataset.bulk.split("-"); bulkColumns(trace, mode);
   }));
-  $("limitRowsCheck").addEventListener("change", () => { $("rowLimitInput").disabled = !$("limitRowsCheck").checked; });
+  $("limitRowsCheck").addEventListener("change", () => { $("rowLimitInput").disabled = !$("limitRowsCheck").checked; renderMergeInsights(); });
+  $("rowLimitInput").addEventListener("input", renderMergeInsights);
   $("mergeBtn").addEventListener("click", startMerge);
   $("t396Table").addEventListener("change", () => { $("handoffUsersBtn").disabled = !document.querySelector(".t396-user-check:checked"); });
   $("handoffUsersBtn").addEventListener("click", handoffT396Users);
@@ -1228,8 +1433,6 @@ function bindEvents() {
   });
   $("pageSize").addEventListener("change", () => queryTable(1));
   $("mergedTable").addEventListener("click", (event) => {
-    const plotButton = event.target.closest("[data-toggle-plot]");
-    if (plotButton) { togglePlotColumn(plotButton.dataset.togglePlot); return; }
     const menuButton = event.target.closest("[data-column-menu]");
     if (menuButton) openColumnMenu(menuButton.dataset.columnMenu, menuButton);
   });
@@ -1275,6 +1478,11 @@ function bindEvents() {
     if (event.key === "Escape") { closeColumnMenu(); setColumnVisibilityOpen(false); setAnalysisUserPickerOpen(false); }
   });
   $("exportBtn").addEventListener("click", exportCsv);
+  $("resetPlotSizeBtn").addEventListener("click", resetPlotSize);
+  $("plotResizeHandle").addEventListener("pointerdown", beginPlotResize);
+  $("plotResizeHandle").addEventListener("pointermove", movePlotResize);
+  $("plotResizeHandle").addEventListener("pointerup", endPlotResize);
+  $("plotResizeHandle").addEventListener("pointercancel", endPlotResize);
   $("clearCacheBtn").addEventListener("click", clearSessionCache);
   $("closeErrorBtn").addEventListener("click", hideError);
   window.addEventListener("resize", resizeVisiblePlot, { passive: true });

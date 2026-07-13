@@ -471,16 +471,47 @@ def _category_counts(
     return [(str(row[0]), int(row[1] or 0)) for row in rows]
 
 
-def _sequence_values(
+def _sequence_points(
     connection: duckdb.DuckDBPyConnection,
     table: str,
     metric: str,
     where_sql: str,
     parameters: list[Any],
     count: int,
-) -> list[float]:
+    tti_column: Optional[str] = None,
+) -> dict[str, Any]:
     stride = max(1, math.ceil(max(count, 1) / MAX_CHART_POINTS))
     identifier = quote_ident(metric)
+    if tti_column:
+        tti_identifier = quote_ident(tti_column)
+        rows = connection.execute(
+            f"""
+            WITH ordered AS (
+                SELECT TRY_CAST({tti_identifier} AS DOUBLE) AS x,
+                       TRY_CAST({identifier} AS DOUBLE) AS y,
+                       ROW_NUMBER() OVER (
+                           ORDER BY TRY_CAST({tti_identifier} AS DOUBLE), __source_row
+                       ) AS sequence_no
+                FROM {quote_ident(table)}
+                WHERE {where_sql}
+                  AND TRY_CAST({identifier} AS DOUBLE) IS NOT NULL
+                  AND TRY_CAST({tti_identifier} AS DOUBLE) IS NOT NULL
+            )
+            SELECT x, y
+            FROM ordered
+            WHERE ((sequence_no - 1) % {stride}) = 0
+            ORDER BY sequence_no
+            LIMIT {MAX_CHART_POINTS}
+            """,
+            parameters,
+        ).fetchall()
+        if rows:
+            return {
+                "x": [float(row[0]) for row in rows],
+                "y": [float(row[1]) for row in rows],
+                "x_title": "TTI",
+            }
+
     rows = connection.execute(
         f"""
         SELECT TRY_CAST({identifier} AS DOUBLE) AS value
@@ -493,7 +524,12 @@ def _sequence_values(
         """,
         parameters,
     ).fetchall()
-    return [float(row[0]) for row in rows]
+    y_values = [float(row[0]) for row in rows]
+    return {
+        "x": list(range(1, len(y_values) + 1)),
+        "y": y_values,
+        "x_title": "采样序号",
+    }
 
 
 def _cdf_values(
@@ -549,8 +585,7 @@ def _figure_payload(figure: go.Figure) -> dict[str, Any]:
 
 def _split_sequence_figure(
     metric: str,
-    values: dict[str, list[float]],
-    stats: dict[str, dict[str, Any]],
+    values: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     present = [side for side in ("A", "B") if side in values]
     figure = make_subplots(
@@ -561,23 +596,27 @@ def _split_sequence_figure(
     )
     colors = {"A": COLOR_A, "B": COLOR_B}
     for column_index, side in enumerate(present, start=1):
-        y_values = values[side]
+        x_values = values[side].get("x") or []
+        y_values = values[side].get("y") or []
+        x_title = str(values[side].get("x_title") or "采样序号")
+        hover_x = "TTI" if x_title == "TTI" else "样本"
         figure.add_trace(
             go.Scatter(
-                x=list(range(1, len(y_values) + 1)),
+                x=x_values,
                 y=y_values,
                 mode="lines",
                 name=f"方案 {side}",
                 line={"color": colors[side], "width": 1.8},
-                hovertemplate="样本=%{x}<br>值=%{y}<extra></extra>",
+                hovertemplate=f"{hover_x}=%{{x}}<br>{metric}=%{{y}}<extra></extra>",
             ),
             row=1,
             col=column_index,
         )
-        figure.update_xaxes(title_text="采样序号", row=1, col=column_index)
+        figure.update_xaxes(title_text=x_title, row=1, col=column_index)
         figure.update_yaxes(title_text=metric, row=1, col=column_index)
+    uses_tti = any(str(item.get("x_title")) == "TTI" for item in values.values())
     figure.update_layout(
-        title=f"{metric} · A/B 样本序列",
+        title=f"{metric} · A/B {'TTI 升序' if uses_tti else '样本'}序列",
         height=520,
     )
     return _figure_payload(figure)
@@ -760,7 +799,7 @@ def run_plot_task(
             is_numeric_metric = metric in numeric_columns and metric not in ID_LIKE_COLUMNS
             row = {"metric": metric, "kind": "数值" if is_numeric_metric else "类别"}
             if is_numeric_metric:
-                sequences: dict[str, list[float]] = {}
+                sequences: dict[str, dict[str, Any]] = {}
                 cdfs: dict[str, tuple[list[float], list[float]]] = {}
                 metric_stats: dict[str, dict[str, Any]] = {}
                 for side, (table, metadata, where_sql, parameters) in side_context.items():
@@ -768,15 +807,19 @@ def run_plot_task(
                         continue
                     stats = _metric_stats(connection, table, metric, where_sql, parameters)
                     metric_stats[side] = stats
-                    sequences[side] = _sequence_values(
-                        connection, table, metric, where_sql, parameters, int(stats["count"])
+                    sequences[side] = _sequence_points(
+                        connection,
+                        table,
+                        metric,
+                        where_sql,
+                        parameters,
+                        int(stats["count"]),
+                        tti_column="tti" if "tti" in set(metadata.get("columns") or []) else None,
                     )
                     cdfs[side] = _cdf_values(
                         connection, table, metric, where_sql, parameters, int(stats["count"])
                     )
-                figures[f"{metric} · 序列"] = _split_sequence_figure(
-                    metric, sequences, metric_stats
-                )
+                figures[f"{metric} · 序列"] = _split_sequence_figure(metric, sequences)
                 figures[f"{metric} · CDF"] = _split_cdf_figure(metric, cdfs)
                 for side in ("A", "B"):
                     for key, value in metric_stats.get(side, {}).items():

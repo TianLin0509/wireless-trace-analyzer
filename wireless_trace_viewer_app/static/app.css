@@ -275,6 +275,14 @@ input[type="checkbox"]:checked::after {
 .progress-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--primary); transition: width .24s ease; }
 .progress-row p { margin: 0; color: var(--muted); font: 11px/1.5 var(--mono); }
 
+.analysis-brief { margin: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fbfcfb; }
+.brief-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.brief-metric { min-width: 0; padding: 9px 12px; border-right: 1px solid var(--line); }
+.brief-metric:last-child { border-right: 0; }
+.brief-metric span { display: block; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.brief-metric b { display: block; overflow: hidden; margin-top: 3px; font: 650 12px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.brief-note { margin: 0; padding: 8px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.5; }
+
 .data-table-wrap { width: 100%; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
 .progress-row + .data-table-wrap { margin-top: 12px; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -286,7 +294,7 @@ tbody tr:hover td { background: #f7faf8; }
 .wide-table td.plot-column { background: #f5f8ff; }
 .wide-table tbody tr:hover td.plot-column { background: #edf3ff; }
 .column-head { display: flex; align-items: stretch; min-width: 112px; height: 36px; }
-.column-label-button, .column-menu-button {
+.column-label-button {
   min-width: 0;
   min-height: 36px;
   border: 0;
@@ -294,13 +302,10 @@ tbody tr:hover td { background: #f7faf8; }
   background: transparent;
   color: inherit;
 }
-.column-label-button { display: flex; flex: 1; align-items: center; gap: 6px; padding: 0 6px 0 10px; text-align: left; }
-.column-label-button:hover { background: #e9efec; color: var(--ink); }
+.column-label-button { display: flex; width: 100%; flex: 1; align-items: center; gap: 6px; padding: 0 10px; text-align: left; }
+.column-label-button:hover, th.filtered .column-label-button { background: #e2ebe6; color: var(--ink); }
 .column-label-button .column-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .column-label-button .sort-mark { flex: 0 0 auto; color: var(--primary); font: 700 12px var(--mono); }
-.column-menu-button { width: 30px; flex: 0 0 30px; border-left: 1px solid rgba(188, 201, 194, .65); }
-.column-menu-button:hover, th.filtered .column-menu-button { background: #dfe9e4; color: var(--primary); }
-.column-menu-button::before { content: ""; display: inline-block; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateY(-2px) rotate(45deg); }
 th.plot-selected { box-shadow: inset 0 -2px 0 var(--blue); background: var(--blue-soft); color: #214f9f; }
 th.filtered { box-shadow: inset 0 -2px 0 var(--primary); color: var(--primary); }
 th.plot-selected.filtered { box-shadow: inset 0 -2px 0 var(--primary), inset 0 -4px 0 var(--blue); }
@@ -385,8 +390,17 @@ th.plot-selected.filtered { box-shadow: inset 0 -2px 0 var(--primary), inset 0 -
 .metric-grid .check-item { border: 1px solid var(--line); background: var(--surface-2); }
 .figure-tabs { margin: 13px 0 8px; padding-bottom: 2px; }
 .figure-tabs button.active { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); }
-.plot-surface { position: relative; width: 100%; min-width: 0; height: 560px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+.plot-size-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 30px; color: var(--muted); font-size: 10px; }
+.plot-size-toolbar .text-btn { min-height: 26px; font-size: 10px; }
+.plot-resize-frame { position: relative; width: 100%; max-width: 100%; min-width: 360px; height: 560px; min-height: 320px; }
+.plot-surface { position: relative; width: 100%; height: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); transition: border-color .16s; }
+.plot-surface:hover { border-color: var(--line-strong); }
 .plot-surface .empty-state { height: 100%; border: 0; }
+.plot-resize-handle { position: absolute; right: 3px; bottom: 3px; z-index: 20; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: rgba(255, 255, 255, .9); color: var(--muted); cursor: nwse-resize; touch-action: none; }
+.plot-resize-handle::before, .plot-resize-handle::after { content: ""; position: absolute; right: 5px; bottom: 5px; width: 10px; height: 10px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; }
+.plot-resize-handle::after { right: 9px; bottom: 9px; width: 5px; height: 5px; }
+.plot-resize-handle:hover { background: var(--primary-soft); color: var(--primary); }
+body.plot-resizing { cursor: nwse-resize; user-select: none; }
 .table-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-bottom: 9px; }
 .side-switch { display: flex; padding: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); }
 .side-switch button { min-height: 31px; padding: 0 13px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); }
@@ -448,6 +462,8 @@ th.plot-selected.filtered { box-shadow: inset 0 -2px 0 var(--primary), inset 0 -
 .column-action-grid button, .column-menu-footer button { min-height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font-size: 11px; }
 .column-action-grid button:hover, .column-menu-footer button:hover { border-color: var(--primary); color: var(--primary); }
 .column-action-grid button.active { border-color: #b7c9ef; background: var(--blue-soft); color: var(--blue); }
+.column-quick-plot { width: 100%; min-height: 34px; margin-bottom: 7px; border: 1px solid var(--primary); border-radius: 5px; background: var(--primary); color: #fff; font-size: 11px; font-weight: 650; }
+.column-quick-plot:hover:not(:disabled) { border-color: var(--primary-hover); background: var(--primary-hover); }
 .column-condition-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto; gap: 6px; margin-bottom: 6px; }
 .column-condition-row.range { grid-template-columns: 1fr 1fr auto; }
 .column-condition-row input, .column-condition-row select { min-width: 0; height: 32px; font-size: 11px; }
@@ -513,7 +529,12 @@ th.plot-selected.filtered { box-shadow: inset 0 -2px 0 var(--primary), inset 0 -
   .side-switch, .table-toolbar > button, .column-visibility-control, .column-visibility-control > button { width: 100%; }
   .side-switch button { flex: 1; }
   .search-box, .page-size { flex-direction: column; align-items: stretch; gap: 4px; }
-  .plot-surface { height: 430px; }
+  .brief-metrics { grid-template-columns: 1fr 1fr; }
+  .brief-metric:nth-child(2n) { border-right: 0; }
+  .plot-size-toolbar { justify-content: space-between; }
+  .plot-resize-frame { width: 100% !important; min-width: 0; height: 430px; }
+  .plot-resize-handle { cursor: ns-resize; }
+  body.plot-resizing { cursor: ns-resize; }
   .stat-strip, .stat-strip.large { grid-template-columns: 1fr 1fr; }
   .stat-item:nth-child(2n) { border-right: 0; }
   .section-heading { flex-direction: column; gap: 10px; }
@@ -523,6 +544,9 @@ th.plot-selected.filtered { box-shadow: inset 0 -2px 0 var(--primary), inset 0 -
 
 @media (max-width: 480px) {
   .metric-grid { grid-template-columns: 1fr; }
+  .brief-metrics { grid-template-columns: 1fr; }
+  .brief-metric { border-right: 0; border-bottom: 1px solid var(--line); }
+  .brief-metric:last-child { border-bottom: 0; }
   .column-profile-grid { grid-template-columns: 1fr 1fr; }
   .column-action-grid, .column-menu-footer { grid-template-columns: 1fr; }
   .stat-strip, .stat-strip.large { grid-template-columns: 1fr; }

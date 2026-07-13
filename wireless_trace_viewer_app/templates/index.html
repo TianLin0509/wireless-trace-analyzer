@@ -114,6 +114,10 @@
           <div class="progress-track"><i id="readProgressBar"></i></div>
           <p id="readProgressDetail">任务已创建。</p>
         </div>
+        <div id="readInsights" class="analysis-brief hidden" aria-live="polite">
+          <div id="readInsightMetrics" class="brief-metrics"></div>
+          <p id="readInsightNote" class="brief-note"></p>
+        </div>
         <div class="data-table-wrap compact-table">
           <table>
             <thead><tr><th>文件</th><th>方案 / 跟踪</th><th>进度</th><th>已读行数</th><th>状态</th></tr></thead>
@@ -131,6 +135,11 @@
           <p>T537 保持原行；T714 按 crnti、HH:MM:SS、frm、slot 精确关联，未匹配行保留为 NaN。</p>
         </div>
         <span id="mergeStateBadge" class="status-badge idle">等待读取</span>
+      </div>
+
+      <div id="mergeInsights" class="analysis-brief hidden" aria-live="polite">
+        <div id="mergeInsightMetrics" class="brief-metrics"></div>
+        <p id="mergeInsightNote" class="brief-note"></p>
       </div>
 
       <div class="split-layout">
@@ -206,7 +215,7 @@
         </div>
         <div id="tableConditionBar" class="table-condition-bar">
           <span class="condition-label">列条件</span>
-          <div id="activeFilterChips" class="filter-chips"><span class="muted">点击任意列名右侧箭头进行排序或筛选。</span></div>
+          <div id="activeFilterChips" class="filter-chips"><span class="muted">点击任意列名进行排序、筛选或按 TTI 画图。</span></div>
         </div>
         <div id="mergedTable" class="data-table-wrap wide-table"><div class="empty-state">汇总完成后显示合并明细。</div></div>
         <div id="tablePager" class="pager"></div>
@@ -257,7 +266,14 @@
           <p id="plotProgressDetail">正在准备。</p>
         </div>
         <div id="figureTabs" class="figure-tabs"></div>
-        <div id="analysisPlot" class="plot-surface"><div class="empty-state">选择指标后点击“一键画图”。</div></div>
+        <div class="plot-size-toolbar">
+          <span>拖动图表右下角可调整宽度和高度</span>
+          <button id="resetPlotSizeBtn" class="text-btn" type="button">恢复默认尺寸</button>
+        </div>
+        <div id="plotResizeFrame" class="plot-resize-frame">
+          <div id="analysisPlot" class="plot-surface"><div class="empty-state">选择指标后点击“一键画图”。</div></div>
+          <button id="plotResizeHandle" class="plot-resize-handle" type="button" aria-label="拖动调整图表宽度和高度" title="拖动调整图表宽度和高度"></button>
+        </div>
       </div>
     </section>
   </main>

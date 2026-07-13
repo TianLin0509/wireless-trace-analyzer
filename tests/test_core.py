@@ -34,9 +34,9 @@ def make_fixture(root: Path) -> None:
     for timestamp, shift in [("20260710090000", 0), ("20260710100000", 2)]:
         frame_537 = pd.DataFrame(
             [
+                {"tti": 3, "crnti": 1003, "HH:MM:SS": "09:00:00", "frm": 10, "slotNo": 3, "ambr": 5003, "schType": "DL", "suOrMuFlag": "SU", "jtMode": 1, "cw0SuMcs": 20 + shift, "tb0SchMcs": 21 + shift, "schRank": 1, "usrschpdschDrbData": 1600},
                 {"tti": 1, "crnti": 1001, "HH:MM:SS": "09:00:00", "frm": 10, "slotNo": 1, "ambr": 5001, "schType": "DL", "suOrMuFlag": "SU", "jtMode": 0, "cw0SuMcs": 10 + shift, "tb0SchMcs": 11 + shift, "schRank": 1, "usrschpdschDrbData": 800},
                 {"tti": 2, "crnti": 1002, "HH:MM:SS": "09:00:00", "frm": 10, "slotNo": 2, "ambr": 5002, "schType": "DL", "suOrMuFlag": "MU", "jtMode": 0, "cw0SuMcs": 15 + shift, "tb0SchMcs": 16 + shift, "schRank": 2, "usrschpdschDrbData": 1200},
-                {"tti": 3, "crnti": 1003, "HH:MM:SS": "09:00:00", "frm": 10, "slotNo": 3, "ambr": 5003, "schType": "DL", "suOrMuFlag": "SU", "jtMode": 1, "cw0SuMcs": 20 + shift, "tb0SchMcs": 21 + shift, "schRank": 1, "usrschpdschDrbData": 1600},
             ]
         )
         frame_714 = pd.DataFrame(
@@ -116,9 +116,9 @@ def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
         merged = run_merge_task(
             session,
             "test-merge",
-            # ambr is intentionally omitted: the merge engine must preserve the
-            # analysis user key even when it is hidden from interested columns.
-            selected_537=["tti", "crnti", "HH:MM:SS", "frm", "slotNo", "schType", "suOrMuFlag", "jtMode", "cw0SuMcs", "tb0SchMcs", "schRank", "usrschpdschDrbData"],
+            # tti/ambr are intentionally omitted: the merge engine must retain
+            # the time axis and analysis user key for downstream charts.
+            selected_537=["crnti", "HH:MM:SS", "frm", "slotNo", "schType", "suOrMuFlag", "jtMode", "cw0SuMcs", "tb0SchMcs", "schRank", "usrschpdschDrbData"],
             selected_714=["crnti", "HH:MM:SS", "frm", "slotNum", "ack0", "retansNum0", "isMuFlag", "mcsOffset[0]", "compOlla"],
             row_limit=0,
         )
@@ -127,6 +127,8 @@ def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
         assert merged["sides"]["A"]["matched_rows"] == 2
         assert merged["sides"]["A"]["nan_rows"] == 1
         assert merged["sides"]["A"]["duplicate_714_keys"] == 1
+        assert "tti" in merged["common_columns"]
+        assert "ambr" in merged["common_columns"]
         assert "714_mcsOffset0_scaled" in merged["numeric_columns"]
 
         page = query_rows(
@@ -188,12 +190,16 @@ def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
             session,
             "test-plot",
             metrics=["cw0SuMcs", "714_ack0", "schType"],
-            filters=[{"column": "ambr", "op": "eq", "value": "5001"}],
+            filters=[],
         )
         assert "cw0SuMcs · 序列" in plots["figures"]
         assert "cw0SuMcs · CDF" in plots["figures"]
         assert "schType · 频次" in plots["figures"]
         assert "BLER · 并列柱形图" in plots["figures"]
+        sequence = plots["figures"]["cw0SuMcs · 序列"]
+        assert sequence["data"][0]["x"] == [1.0, 2.0, 3.0]
+        assert sequence["data"][0]["y"] == [10.0, 15.0, 20.0]
+        assert sequence["layout"]["xaxis"]["title"]["text"] == "TTI"
 
         export_path = export_filtered_csv(
             session,
