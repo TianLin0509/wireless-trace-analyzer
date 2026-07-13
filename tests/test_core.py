@@ -7,10 +7,12 @@ import pandas as pd
 from wireless_trace_viewer_app.catalog import (
     build_catalog,
     build_dual_catalog,
+    build_kpi_t396_plan,
     scan_csv_files,
     selected_sources,
 )
 from wireless_trace_viewer_app.engine import (
+    run_kpi396_task,
     run_ingest_task,
     run_merge_task,
 )
@@ -90,6 +92,83 @@ def test_dual_directory_catalog_keeps_same_timestamp_schemes_separate(tmp_path: 
     assert sources["B537"]["scheme"] == "B"
 
 
+def test_parse_result_parent_context_is_visible_and_separates_batches(tmp_path: Path) -> None:
+    timestamp = "20260710110000"
+    first = tmp_path / "Cell_001" / "Round_03" / "ParseResult"
+    second = tmp_path / "Cell_002" / "Round_07" / "ParseResult"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    frame = pd.DataFrame(
+        [{"dlAmbr": 5001, "dlThpVolRmvLastSlot": 1000, "dlThpTimeRmvLastSlot": 100}]
+    )
+    write_trace(first, "396", timestamp, frame)
+    write_trace(second, "396", timestamp, frame)
+
+    catalog = build_catalog(scan_csv_files(tmp_path))
+
+    assert catalog["batch_count"] == 2
+    assert {tuple(batch["context_parts"]) for batch in catalog["batches"]} == {
+        ("Cell_001", "Round_03", "ParseResult"),
+        ("Cell_002", "Round_07", "ParseResult"),
+    }
+    assert all(batch["batch_id"] != timestamp for batch in catalog["batches"])
+    assert all(batch["context_path"].endswith("ParseResult") for batch in catalog["batches"])
+    assert all("Cell_" in batch["context_label"] for batch in catalog["batches"])
+
+
+def test_kpi396_multiple_groups_only_reads_t396(tmp_path: Path) -> None:
+    root_a = tmp_path / "scheme_a"
+    root_b = tmp_path / "scheme_b"
+    root_a.mkdir()
+    root_b.mkdir()
+    timestamps = ["20260710110000", "20260710120000"]
+    rates = {
+        timestamps[0]: (10.0, 12.0),
+        timestamps[1]: (20.0, 18.0),
+    }
+    for timestamp, (rate_a, rate_b) in rates.items():
+        for root, rate in [(root_a, rate_a), (root_b, rate_b)]:
+            write_trace(
+                root,
+                "396",
+                timestamp,
+                pd.DataFrame(
+                    [
+                        {
+                            "dlAmbr": 5001,
+                            "dlThpVolRmvLastSlot": rate * 100,
+                            "dlThpTimeRmvLastSlot": 100,
+                        }
+                    ]
+                ),
+            )
+    catalog = build_dual_catalog(
+        {"A": scan_csv_files(root_a), "B": scan_csv_files(root_b)},
+        {"A": root_a, "B": root_b},
+    )
+    groups = [
+        {"id": "cell-1", "label": "小区 1", "a_batch_id": timestamps[0], "b_batch_id": timestamps[0]},
+        {"id": "cell-2", "label": "小区 2", "a_batch_id": timestamps[1], "b_batch_id": timestamps[1]},
+    ]
+    sources, resolved = build_kpi_t396_plan(catalog, groups)
+
+    assert len(sources) == 4
+    assert all(source["trace_id"] == "396" for source in sources.values())
+    assert len(resolved) == 2
+
+    session = SESSIONS.create(tmp_path, catalog, roots={"A": root_a, "B": root_b})
+    try:
+        result = run_kpi396_task(session, "test-kpi396", sources, resolved)
+        assert result["phase"] == "kpi396"
+        assert len(result["groups"]) == 2
+        assert result["summary"]["improved"] == 1
+        assert result["summary"]["declined"] == 1
+        assert result["groups"][0]["comparison"]["diff_pct"] == 20.0
+        assert result["groups"][1]["comparison"]["diff_pct"] == -10.0
+    finally:
+        SESSIONS.clear(session.session_id)
+
+
 def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
     make_fixture(tmp_path)
     files = scan_csv_files(tmp_path)
@@ -112,6 +191,8 @@ def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
         assert ingest["sources"]["A537"]["rows"] == 3
         assert ingest["t396"]["cell_rate_b"] > ingest["t396"]["cell_rate_a"]
         assert TASKS.get("test-ingest")["files"]["A537"]["path"] == sources["A537"]["path"]
+        assert TASKS.get("test-ingest")["partial"]["phase"] == "t396_ready"
+        assert TASKS.get("test-ingest")["partial"]["t396"]["available"] is True
 
         merged = run_merge_task(
             session,

@@ -13,11 +13,12 @@ from plotly.utils import PlotlyJSONEncoder
 from .catalog import (
     build_catalog,
     build_dual_catalog,
+    build_kpi_t396_plan,
     scan_csv_files,
     selected_sources,
 )
 from .config import APP_TITLE, APP_VERSION
-from .engine import run_ingest_task, run_merge_task
+from .engine import run_ingest_task, run_kpi396_task, run_merge_task
 from .queries import (
     column_profile,
     export_filtered_csv,
@@ -49,6 +50,11 @@ def diagnose_error(message: str) -> dict[str, Any]:
         return {
             "reason": "方案 A/B 最终选择了同一个物理 CSV，无法形成有效对比。",
             "actions": ["检查 A/B 文件夹是否误填为同一路径", "在对应方案中改选其他测试批次", "使用 A/B 互换按钮后重新扫描"],
+        }
+    if "KPI" in text and "T396" in text:
+        return {
+            "reason": "KPI 对比组没有可用的 T396，或 A/B 误选为同一份 T396。",
+            "actions": ["检查该组 A/B 批次是否包含 T396", "展开测试批次并核对 ParseResult 绝对路径", "删除空组或重新选择批次后再分析"],
         }
     if "缺少 t537" in lowered or "均缺少 t537" in lowered:
         return {
@@ -264,6 +270,19 @@ def create_app() -> Flask:
                     )
                 session.update(selection=selection, sources={}, phase="reading")
                 worker = lambda task_id: run_ingest_task(session, task_id, sources)
+            elif action == "kpi396":
+                groups = data.get("groups") or []
+                if not isinstance(groups, list):
+                    raise ValueError("KPI 多组配置格式无效。")
+                catalog = session.manifest.get("catalog", {})
+                sources, resolved_groups = build_kpi_t396_plan(catalog, groups)
+                session.update(sources={}, phase="reading_kpi", kpi396={})
+                worker = lambda task_id: run_kpi396_task(
+                    session,
+                    task_id,
+                    sources,
+                    resolved_groups,
+                )
             elif action == "merge":
                 columns_537 = [str(value) for value in (data.get("columns_537") or [])]
                 columns_714 = [str(value) for value in (data.get("columns_714") or [])]

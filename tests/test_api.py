@@ -52,6 +52,27 @@ def test_flask_api_async_workflow_and_diagnostics(tmp_path: Path) -> None:
     assert scan_data["catalog"]["side_catalogs"]["B"]["file_count"] == 7
     session_id = scan_data["session_id"]
 
+    kpi_start = client.post(
+        "/api/task/start",
+        json={
+            "action": "kpi396",
+            "session_id": session_id,
+            "groups": [
+                {
+                    "id": "api-kpi-1",
+                    "label": "API 小区对比",
+                    "a_batch_id": scan_data["selection"]["A"],
+                    "b_batch_id": scan_data["selection"]["B"],
+                }
+            ],
+        },
+    )
+    kpi_task = wait_task(client, kpi_start.get_json()["task_id"])
+    assert kpi_task["status"] == "done", kpi_task
+    assert kpi_task["result"]["phase"] == "kpi396"
+    assert len(kpi_task["result"]["sources"]) == 2
+    assert all(source["trace_id"] == "396" for source in kpi_task["result"]["sources"].values())
+
     ingest_start = client.post(
         "/api/task/start",
         json={

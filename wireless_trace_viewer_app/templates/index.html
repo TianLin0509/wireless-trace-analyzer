@@ -91,7 +91,7 @@
     </section>
 
     <nav class="stepper" aria-label="分析步骤">
-      <button class="step active" data-step="1" type="button"><span>1</span><b>读取数据</b><small>396 / 537 / 714</small></button>
+      <button class="step active" data-step="1" type="button"><span>1</span><b>读取数据</b><small>T396 先出结果</small></button>
       <span class="step-line" aria-hidden="true"></span>
       <button class="step" data-step="2" type="button" disabled><span>2</span><b>数据汇总</b><small>537 锚点关联 714</small></button>
       <span class="step-line" aria-hidden="true"></span>
@@ -103,10 +103,31 @@
         <div>
           <span class="eyebrow">Step 1</span>
           <h2 id="step1Title">读取数据</h2>
-          <p>最多同时读取两个文件；原始明细写入 DuckDB 磁盘缓存，T396 只保留聚合结果。</p>
+          <p>优先并行聚合 A/B 的 T396 并立即显示速率；随后继续读取 T537/T714 并写入 DuckDB 磁盘缓存。</p>
         </div>
-        <span id="readStateBadge" class="status-badge idle">等待开始</span>
+        <div class="read-heading-actions">
+          <button id="kpiModeBtn" class="secondary-btn compact-action" type="button" disabled>KPI 概览模式</button>
+          <span id="readStateBadge" class="status-badge idle">等待开始</span>
+        </div>
       </div>
+      <section id="kpiPanel" class="kpi-panel hidden" aria-labelledby="kpiPanelTitle">
+        <div class="subsection-head">
+          <div>
+            <h3 id="kpiPanelTitle">多组小区 KPI 概览</h3>
+            <p>每组独立选择 A/B 测试批次；只读取去重后的 T396，不加载 T537/T714。</p>
+          </div>
+          <div class="kpi-config-actions">
+            <button id="autoPairKpiBtn" class="text-btn" type="button">按目录顺序配对</button>
+            <button id="addKpiGroupBtn" class="secondary-btn compact-action" type="button">添加对比组</button>
+          </div>
+        </div>
+        <div class="kpi-group-head" aria-hidden="true"><span>名称</span><span>方案 A 批次</span><span>方案 B 批次</span><span></span></div>
+        <div id="kpiGroupRows" class="kpi-group-rows"></div>
+        <div class="kpi-panel-footer">
+          <span id="kpiGroupCount" class="muted">0 组</span>
+          <button id="startKpiBtn" class="primary-btn" type="button">开始 KPI 分析</button>
+        </div>
+      </section>
       <div id="readEmpty" class="empty-state">指定方案 A/B 目录，完成扫描后点击“开始分析”。</div>
       <div id="readProgressArea" class="hidden">
         <div class="progress-row">
@@ -125,6 +146,18 @@
           </table>
         </div>
       </div>
+      <aside id="t396Panel" class="t396-panel t396-read-panel" aria-labelledby="t396Title">
+        <div class="subsection-head"><div><h3 id="t396Title">T396 速率对比</h3><p>读取期间优先呈现；勾选用户后可直接带入 Step 3。</p></div></div>
+        <div id="t396Stats" class="stat-strip"></div>
+        <div id="t396Table" class="data-table-wrap compact-table"><div class="empty-state small">开始完整分析后，T396 结果会优先显示。</div></div>
+        <button id="handoffUsersBtn" class="secondary-btn full-width" type="button" disabled>将选中用户加入后续分析</button>
+      </aside>
+      <section id="kpiResults" class="kpi-results hidden" aria-labelledby="kpiResultsTitle">
+        <div class="subsection-head"><div><h3 id="kpiResultsTitle">KPI 对比结果</h3><p>先看小区 Rate，再展开单组核对用户级差异。</p></div></div>
+        <div id="kpiStats" class="stat-strip large"></div>
+        <div id="kpiSummaryTable" class="data-table-wrap"></div>
+        <div id="kpiUserDetails" class="kpi-user-details"></div>
+      </section>
     </section>
 
     <section id="step2" class="step-panel" aria-labelledby="step2Title">
@@ -142,8 +175,7 @@
         <p id="mergeInsightNote" class="brief-note"></p>
       </div>
 
-      <div class="split-layout">
-        <div class="column-config">
+      <div class="column-config">
           <div class="subsection-head"><div><h3>选择汇总字段</h3><p>连接键自动保留；714 会添加“714_”前缀。</p></div></div>
           <div class="column-panes">
             <div class="column-pane">
@@ -169,14 +201,6 @@
             <div class="progress-track"><i id="mergeProgressBar"></i></div>
             <p id="mergeProgressDetail">正在准备。</p>
           </div>
-        </div>
-
-        <aside class="t396-panel" aria-labelledby="t396Title">
-          <div class="subsection-head"><div><h3 id="t396Title">T396 速率对比</h3><p>勾选用户后，可直接带入 Step 3。</p></div></div>
-          <div id="t396Stats" class="stat-strip"></div>
-          <div id="t396Table" class="data-table-wrap compact-table"><div class="empty-state small">读取完成后显示。</div></div>
-          <button id="handoffUsersBtn" class="secondary-btn full-width" type="button" disabled>将选中用户加入后续分析</button>
-        </aside>
       </div>
     </section>
 

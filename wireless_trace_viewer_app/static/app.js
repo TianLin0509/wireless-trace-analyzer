@@ -7,6 +7,10 @@ const state = {
   schemas: {},
   merge: null,
   t396: null,
+  t396ReadyTaskId: "",
+  kpiMode: false,
+  kpiGroups: [],
+  kpiResult: null,
   selectedColumns: { "537": new Set(), "714": new Set() },
   availableUsers: [],
   selectedUsers: new Set(),
@@ -25,7 +29,7 @@ const state = {
   activeStep: 1,
   sourceCollapsed: false,
   generation: 0,
-  taskTokens: { ingest: 0, merge: 0, plot: 0 },
+  taskTokens: { ingest: 0, kpi: 0, merge: 0, plot: 0 },
   plotRenderToken: 0,
   columnMenu: { column: "", profile: null, selectedValues: new Set(), token: 0, search: "" },
 };
@@ -125,7 +129,9 @@ function setProgress(prefix, task) {
 
 function batchLabel(batch) {
   const traces = (batch.available_traces || []).map((trace) => `T${trace}`).join(" / ") || "无有效跟踪";
-  return `${batch.test_time_short || batch.test_time || "未解析时间"} · ${traces}`;
+  const contextValue = batch.context_path || batch.context_label || "";
+  const context = contextValue ? `${contextValue} · ` : "";
+  return `${context}${batch.test_time_short || batch.test_time || "未解析时间"} · ${traces}`;
 }
 
 function catalogForSide(side) {
@@ -148,6 +154,8 @@ function selectedBatch(side, batchId) {
 function batchPathTitle(side, batch) {
   if (!batch) return catalogForSide(side).root || state.catalog?.roots?.[side] || "";
   const paths = [];
+  if (batch.context_label) paths.push(`目录层级: ${batch.context_label}`);
+  if (batch.context_path) paths.push(`ParseResult: ${batch.context_path}`);
   for (const trace of ["396", "537", "714"]) {
     const selected = batch.traces?.[trace]?.selected;
     if (selected?.path) paths.push(`T${trace}: ${selected.path}`);
@@ -194,11 +202,173 @@ function renderBatchSummary() {
       parts.push(`<span class="batch-pill"><b>方案 ${side}</b>：空</span>`);
       continue;
     }
-    parts.push(`<span class="batch-pill" title="${escapeHtml(batchPathTitle(side, batch))}"><b>方案 ${side}</b>：${escapeHtml(batch.test_time_short)} · ${batch.available_count} 个跟踪</span>`);
+    const context = batch.context_path || batch.context_label || "当前目录";
+    parts.push(`<span class="batch-pill" title="${escapeHtml(batchPathTitle(side, batch))}"><span class="batch-context">方案 ${side} · ${escapeHtml(context)}</span><span class="batch-meta">${escapeHtml(batch.test_time_short || batch.test_time || "未解析时间")} · ${batch.available_count} 个跟踪</span></span>`);
   }
   $("batchSummary").innerHTML = parts.join("");
   $("batchSummary").classList.remove("hidden");
   updateStartAvailability();
+}
+
+function kpiGroupLabel(batchA, batchB, index) {
+  const contextA = batchA?.context_label || "";
+  const contextB = batchB?.context_label || "";
+  const timeA = batchA?.test_time_short || batchA?.test_time || "";
+  const timeB = batchB?.test_time_short || batchB?.test_time || "";
+  if (contextA && contextA === contextB) {
+    if (timeA && timeA === timeB) return `${contextA} · ${timeA}`;
+    return `${contextA} · A ${timeA || "空"} / B ${timeB || "空"}`;
+  }
+  if (contextA || contextB) {
+    const sideA = contextA ? `A ${contextA}${timeA ? ` · ${timeA}` : ""}` : "A 空";
+    const sideB = contextB ? `B ${contextB}${timeB ? ` · ${timeB}` : ""}` : "B 空";
+    return `${sideA} / ${sideB}`;
+  }
+  return `对比组 ${index}`;
+}
+
+function createKpiGroup(index, batchA = null, batchB = null) {
+  return {
+    id: `kpi-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}`,
+    label: kpiGroupLabel(batchA, batchB, index),
+    a_batch_id: batchA?.batch_id || "",
+    b_batch_id: batchB?.batch_id || "",
+  };
+}
+
+function kpiBatchOptions(side, selected) {
+  const empty = `<option value="">方案 ${side} 留空</option>`;
+  const options = (catalogForSide(side).batches || []).map((batch) => (
+    `<option value="${escapeHtml(batch.batch_id)}" title="${escapeHtml(batchPathTitle(side, batch))}" ${String(selected || "") === String(batch.batch_id) ? "selected" : ""}>${escapeHtml(batchLabel(batch))}</option>`
+  )).join("");
+  return empty + options;
+}
+
+function renderKpiGroups() {
+  const rows = state.kpiGroups || [];
+  $("kpiGroupRows").innerHTML = rows.map((group) => `
+    <div class="kpi-group-row" data-kpi-id="${escapeHtml(group.id)}">
+      <label class="kpi-cell"><span>名称</span><input type="text" data-kpi-field="label" value="${escapeHtml(group.label)}" maxlength="80"></label>
+      <label class="kpi-cell"><span>方案 A 批次</span><select data-kpi-field="a_batch_id">${kpiBatchOptions("A", group.a_batch_id)}</select></label>
+      <label class="kpi-cell"><span>方案 B 批次</span><select data-kpi-field="b_batch_id">${kpiBatchOptions("B", group.b_batch_id)}</select></label>
+      <button class="kpi-remove-btn" type="button" data-kpi-remove title="删除此对比组" aria-label="删除此对比组">×</button>
+    </div>
+  `).join("") || `<div class="empty-state small">点击“添加对比组”，或按目录顺序自动配对。</div>`;
+  $("kpiGroupCount").textContent = `${rows.length} 组`;
+  $("startKpiBtn").disabled = rows.length === 0;
+}
+
+function seedKpiGroups() {
+  const batchA = selectedBatch("A", $("schemeA").value);
+  const batchB = selectedBatch("B", $("schemeB").value);
+  state.kpiGroups = (batchA || batchB) ? [createKpiGroup(1, batchA, batchB)] : [];
+  renderKpiGroups();
+}
+
+function autoPairKpiGroups() {
+  const batchesA = catalogForSide("A").batches || [];
+  const batchesB = catalogForSide("B").batches || [];
+  const count = Math.min(30, Math.max(batchesA.length, batchesB.length));
+  state.kpiGroups = Array.from({ length: count }, (_, index) => createKpiGroup(index + 1, batchesA[index], batchesB[index]));
+  renderKpiGroups();
+  toast(`已按目录顺序生成 ${count} 组 KPI 对比。`);
+}
+
+function addKpiGroup() {
+  if (state.kpiGroups.length >= 30) { toast("KPI 概览单次最多 30 组。"); return; }
+  state.kpiGroups.push(createKpiGroup(state.kpiGroups.length + 1));
+  renderKpiGroups();
+}
+
+function setKpiMode(active) {
+  state.kpiMode = Boolean(active);
+  $("kpiPanel").classList.toggle("hidden", !state.kpiMode);
+  $("t396Panel").classList.toggle("hidden", state.kpiMode);
+  $("kpiResults").classList.toggle("hidden", !state.kpiMode || !state.kpiResult);
+  $("kpiModeBtn").classList.toggle("active", state.kpiMode);
+  $("kpiModeBtn").textContent = state.kpiMode ? "退出 KPI 概览" : "KPI 概览模式";
+  if (state.kpiMode) {
+    if (!state.kpiGroups.length) seedKpiGroups();
+    goStep(1);
+  }
+}
+
+function kpiSideLabel(reference) {
+  if (!reference) return "空";
+  const context = reference.context_label || "当前目录";
+  const time = reference.test_time_short || reference.test_time || "未解析时间";
+  return `${context} · ${time}${reference.missing ? " · 缺少 T396" : ""}`;
+}
+
+function renderKpiResults() {
+  const result = state.kpiResult;
+  if (!result) { $("kpiResults").classList.add("hidden"); return; }
+  const summary = result.summary || {};
+  $("kpiStats").innerHTML = statItems([
+    ["对比组", formatNumber(summary.group_count || 0, 0)],
+    ["去重 T396", formatNumber(summary.source_count || 0, 0)],
+    ["提升 / 下降", `${summary.improved || 0} / ${summary.declined || 0}`],
+    ["平均差异", summary.average_diff_pct == null ? "-" : `${formatNumber(summary.average_diff_pct, 3)}%`],
+  ]);
+  const groups = result.groups || [];
+  $("kpiSummaryTable").innerHTML = `<table><thead><tr><th>对比组</th><th>方案 A 批次</th><th>方案 B 批次</th><th>A 小区 Rate</th><th>B 小区 Rate</th><th>B-A 差异</th><th>A/B 用户</th></tr></thead><tbody>${groups.map((group) => {
+    const comparison = group.comparison || {};
+    const diff = Number(comparison.diff_pct);
+    const cls = Number.isFinite(diff) ? (diff > 0 ? "rate-up" : diff < 0 ? "rate-down" : "") : "";
+    return `<tr><td><b>${escapeHtml(group.label)}</b></td><td title="${escapeHtml(group.A?.context_path || group.A?.path || "")}">${escapeHtml(kpiSideLabel(group.A))}</td><td title="${escapeHtml(group.B?.context_path || group.B?.path || "")}">${escapeHtml(kpiSideLabel(group.B))}</td><td>${formatNumber(comparison.cell_rate_a, 6)}</td><td>${formatNumber(comparison.cell_rate_b, 6)}</td><td class="${cls}">${comparison.diff_pct == null ? "-" : `${formatNumber(comparison.diff_pct, 3)}%`}</td><td>${comparison.users_a || 0} / ${comparison.users_b || 0}</td></tr>`;
+  }).join("")}</tbody></table>`;
+  $("kpiUserDetails").innerHTML = groups.map((group) => {
+    const comparison = group.comparison || {};
+    const rows = comparison.rows || [];
+    return `<details><summary><b>${escapeHtml(group.label)} · 用户级 Rate</b><span>${rows.length} 个用户</span></summary><div class="data-table-wrap"><table><thead><tr><th>ambr</th><th>Rate A</th><th>Rate B</th><th>B-A 差异</th><th>Time A</th><th>Time B</th></tr></thead><tbody>${rows.slice(0, 500).map((row) => {
+      const diff = Number(row.diff_pct);
+      const cls = Number.isFinite(diff) ? (diff > 0 ? "rate-up" : diff < 0 ? "rate-down" : "") : "";
+      return `<tr><td class="mono">${escapeHtml(row.user_id)}</td><td>${formatNumber(row.rate_a, 6)}</td><td>${formatNumber(row.rate_b, 6)}</td><td class="${cls}">${row.diff_pct == null ? "-" : `${formatNumber(row.diff_pct, 3)}%`}</td><td>${formatNumber(row.sum_time_a, 3)}</td><td>${formatNumber(row.sum_time_b, 3)}</td></tr>`;
+    }).join("")}</tbody></table></div></details>`;
+  }).join("");
+  $("kpiResults").classList.remove("hidden");
+}
+
+async function startKpiOverview() {
+  if (!state.sessionId) { toast("请先扫描目录。"); return; }
+  const groups = state.kpiGroups.map((group, index) => ({
+    id: group.id,
+    label: String(group.label || `对比组 ${index + 1}`).trim(),
+    a_batch_id: group.a_batch_id || null,
+    b_batch_id: group.b_batch_id || null,
+  }));
+  if (!groups.length || groups.some((group) => !group.a_batch_id && !group.b_batch_id)) {
+    toast("每个 KPI 对比组至少选择一个 A 或 B 批次。");
+    return;
+  }
+  hideError();
+  setBusy($("startKpiBtn"), true, "分析中...");
+  $("readEmpty").classList.add("hidden");
+  $("readProgressArea").classList.remove("hidden");
+  $("kpiResults").classList.add("hidden");
+  setBadge("readStateBadge", "KPI 读取中", "running");
+  setStepEnabled(2, false);
+  setStepEnabled(3, false);
+  state.ingest = null;
+  state.kpiResult = null;
+  state.t396ReadyTaskId = "";
+  try {
+    const start = await api("/api/task/start", { action: "kpi396", session_id: state.sessionId, groups });
+    const result = await pollTask(start.task_id, "kpi", { progress: renderReadTask });
+    state.ingest = result;
+    state.kpiResult = result;
+    setProgress("read", { pct: 100, title: "KPI 分析完成", detail: `${result.groups?.length || 0} 组 A/B 已完成 T396 对比。` });
+    setBadge("readStateBadge", "KPI 完成", "ready");
+    renderKpiResults();
+    toast("多组 KPI 概览已生成；未读取 T537/T714。 ");
+    pollMemoryStatus();
+  } catch (error) {
+    if (error.superseded) return;
+    setBadge("readStateBadge", "KPI 失败", "error");
+    showError(error, "KPI 概览失败");
+  } finally {
+    setBusy($("startKpiBtn"), false);
+  }
 }
 
 async function scanDirectory() {
@@ -220,6 +390,9 @@ async function scanDirectory() {
     state.schemas = {};
     state.merge = null;
     state.t396 = null;
+    state.t396ReadyTaskId = "";
+    state.kpiResult = null;
+    state.kpiGroups = [];
     state.availableUsers = [];
     state.selectedUsers.clear();
     state.userPickerDraft.clear();
@@ -238,7 +411,10 @@ async function scanDirectory() {
     renderSchemeScanStats("A");
     renderSchemeScanStats("B");
     $("toggleSourceBtn").classList.remove("hidden");
+    $("kpiModeBtn").disabled = false;
     renderBatchSummary();
+    seedKpiGroups();
+    setKpiMode(false);
     const sideA = catalogForSide("A");
     const sideB = catalogForSide("B");
     $("scanMessage").textContent = `扫描完成：A ${sideA.file_count || 0} 个文件 / ${sideA.batch_count || 0} 个批次；B ${sideB.file_count || 0} 个文件 / ${sideB.batch_count || 0} 个批次。`;
@@ -295,10 +471,17 @@ function goStep(step) {
 
 function renderReadTask(task) {
   setProgress("read", task);
+  if (task.partial?.phase === "t396_ready" && state.t396ReadyTaskId !== task.task_id) {
+    state.t396ReadyTaskId = task.task_id;
+    state.t396 = task.partial.t396 || {};
+    if (!state.kpiMode) renderT396();
+    toast("T396 速率已生成，T537/T714 正在继续读取。");
+  }
   const rows = Object.entries(task.files || {}).sort(([left], [right]) => left.localeCompare(right)).map(([key, file]) => {
     const pct = Math.max(0, Math.min(100, Number(file.pct || 0)));
     const status = file.status === "ready" ? "完成" : file.status === "error" ? "失败" : file.status === "reading" ? "读取中" : "排队";
-    return `<tr><td title="${escapeHtml(file.path || file.name || "")}">${escapeHtml(file.name || key)}</td><td class="mono">${escapeHtml(file.side || key[0])} / T${escapeHtml(file.trace_id || key.slice(1))}</td><td><div class="mini-progress"><i style="width:${pct}%"></i></div></td><td class="mono">${formatNumber(file.rows || 0, 0)}</td><td>${status}</td></tr>`;
+    const side = file.side === "KPI" ? "KPI" : (file.side || key[0]);
+    return `<tr><td title="${escapeHtml(file.path || file.name || "")}">${escapeHtml(file.name || key)}</td><td class="mono">${escapeHtml(side)} / T${escapeHtml(file.trace_id || key.slice(1))}</td><td><div class="mini-progress"><i style="width:${pct}%"></i></div></td><td class="mono">${formatNumber(file.rows || 0, 0)}</td><td>${status}</td></tr>`;
   }).join("");
   $("readFileRows").innerHTML = rows || `<tr><td colspan="5">正在建立任务...</td></tr>`;
 }
@@ -328,6 +511,7 @@ async function startAnalysis() {
   const selection = { A: $("schemeA").value || null, B: $("schemeB").value || null };
   if (!selection.A && !selection.B) { toast("方案 A/B 不能同时为空。"); return; }
   if (!state.catalog?.side_catalogs && selection.A && selection.A === selection.B) { toast("方案 A/B 不能选择同一个测试时间。"); return; }
+  setKpiMode(false);
   hideError();
   setBusy($("startBtn"), true, "读取中...");
   $("readEmpty").classList.add("hidden");
@@ -339,6 +523,8 @@ async function startAnalysis() {
   state.merge = null;
   state.schemas = {};
   state.t396 = null;
+  state.t396ReadyTaskId = "";
+  state.kpiResult = null;
   state.selectedColumns = { "537": new Set(), "714": new Set() };
   renderReadInsights();
   renderMergeInsights();
@@ -350,6 +536,7 @@ async function startAnalysis() {
     state.ingest = result;
     state.schemas = result.schemas || {};
     state.t396 = result.t396 || {};
+    state.t396ReadyTaskId = start.task_id;
     setProgress("read", { pct: 100, title: "读取完成", detail: "全部可用跟踪已写入磁盘缓存。" });
     setBadge("readStateBadge", "读取完成", "ready");
     renderColumnConfig();
@@ -1305,6 +1492,11 @@ async function clearSessionCache() {
     state.catalog = null;
     state.ingest = null;
     state.merge = null;
+    state.t396 = null;
+    state.t396ReadyTaskId = "";
+    state.kpiMode = false;
+    state.kpiGroups = [];
+    state.kpiResult = null;
     state.schemas = {};
     state.columnFilters = {};
     state.visibleColumns = new Set();
@@ -1331,6 +1523,13 @@ async function clearSessionCache() {
     $("schemeAStats").textContent = $("pathAInput").value.trim() ? "等待重新扫描" : "允许留空";
     $("schemeBStats").textContent = $("pathBInput").value.trim() ? "等待重新扫描" : "允许留空";
     $("startBtn").disabled = true;
+    $("kpiModeBtn").disabled = true;
+    $("kpiGroupRows").innerHTML = "";
+    $("kpiPanel").classList.add("hidden");
+    $("kpiResults").classList.add("hidden");
+    $("t396Panel").classList.remove("hidden");
+    $("t396Table").innerHTML = `<div class="empty-state small">开始完整分析后，T396 结果会优先显示。</div>`;
+    $("t396Stats").innerHTML = "";
     $("batchSummary").classList.add("hidden");
     $("scanMessage").textContent = "缓存已清理，请重新扫描方案 A/B 目录。";
     goStep(1);
@@ -1345,10 +1544,39 @@ function bindEvents() {
   for (const id of ["pathAInput", "pathBInput"]) {
     $(id).addEventListener("keydown", (event) => { if (event.key === "Enter") scanDirectory(); });
   }
-  $("schemeA").addEventListener("change", renderBatchSummary);
-  $("schemeB").addEventListener("change", renderBatchSummary);
+  for (const id of ["schemeA", "schemeB"]) {
+    $(id).addEventListener("change", () => {
+      renderBatchSummary();
+      if (!state.kpiMode && !state.kpiResult) seedKpiGroups();
+    });
+  }
   $("swapSchemesBtn").addEventListener("click", swapSchemeDirectories);
   $("startBtn").addEventListener("click", startAnalysis);
+  $("kpiModeBtn").addEventListener("click", () => setKpiMode(!state.kpiMode));
+  $("autoPairKpiBtn").addEventListener("click", autoPairKpiGroups);
+  $("addKpiGroupBtn").addEventListener("click", addKpiGroup);
+  $("startKpiBtn").addEventListener("click", startKpiOverview);
+  $("kpiGroupRows").addEventListener("input", (event) => {
+    const row = event.target.closest("[data-kpi-id]");
+    const field = event.target.dataset.kpiField;
+    if (!row || !field) return;
+    const group = state.kpiGroups.find((item) => item.id === row.dataset.kpiId);
+    if (group) group[field] = event.target.value;
+  });
+  $("kpiGroupRows").addEventListener("change", (event) => {
+    const row = event.target.closest("[data-kpi-id]");
+    const field = event.target.dataset.kpiField;
+    if (!row || !field) return;
+    const group = state.kpiGroups.find((item) => item.id === row.dataset.kpiId);
+    if (group) group[field] = event.target.value;
+  });
+  $("kpiGroupRows").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-kpi-remove]");
+    const row = event.target.closest("[data-kpi-id]");
+    if (!button || !row) return;
+    state.kpiGroups = state.kpiGroups.filter((item) => item.id !== row.dataset.kpiId);
+    renderKpiGroups();
+  });
   $("toggleSourceBtn").addEventListener("click", () => toggleSource());
   $$(".step").forEach((button) => button.addEventListener("click", () => goStep(Number(button.dataset.step))));
   for (const trace of ["537", "714"]) {

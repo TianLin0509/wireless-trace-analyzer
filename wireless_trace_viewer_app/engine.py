@@ -87,8 +87,16 @@ def add_internal_columns(
 
 
 class ProgressAggregator:
-    def __init__(self, task_id: str, sources: dict[str, dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        task_id: str,
+        sources: dict[str, dict[str, Any]],
+        title: str = "全量读取并建立磁盘缓存",
+        scale: float = 0.88,
+    ) -> None:
         self.task_id = task_id
+        self.title = title
+        self.scale = scale
         self.weights = {
             key: max(1, int(source.get("size", 1))) for key, source in sources.items()
         }
@@ -120,8 +128,8 @@ class ProgressAggregator:
         )
         TASKS.update(
             self.task_id,
-            pct=round(weighted * 0.88, 2),
-            title="全量读取并建立磁盘缓存",
+            pct=round(weighted * self.scale, 2),
+            title=self.title,
             detail=detail,
         )
 
@@ -396,6 +404,42 @@ def build_t396_comparison(
     }
 
 
+def _ingest_source_group(
+    session: SessionState,
+    task_id: str,
+    sources: dict[str, dict[str, Any]],
+    progress: ProgressAggregator,
+) -> dict[str, dict[str, Any]]:
+    if not sources:
+        return {}
+    results: dict[str, dict[str, Any]] = {}
+    errors: list[Exception] = []
+    with ThreadPoolExecutor(max_workers=min(MAX_READ_WORKERS, len(sources))) as pool:
+        futures = {}
+        for source_key, source in sources.items():
+            worker = ingest_t396_source if source.get("trace_id") == "396" else ingest_table_source
+            future = pool.submit(
+                session_worker_guard,
+                worker,
+                session,
+                task_id,
+                source_key,
+                source,
+                progress,
+            )
+            futures[future] = source_key
+        for future in as_completed(futures):
+            source_key = futures[future]
+            try:
+                results[source_key] = future.result()
+            except Exception as exc:
+                TASKS.update_file(task_id, source_key, status="error", detail=str(exc))
+                errors.append(exc)
+    if errors:
+        raise errors[0]
+    return results
+
+
 def run_ingest_task(
     session: SessionState,
     task_id: str,
@@ -423,28 +467,29 @@ def run_ingest_task(
             trace_id=source.get("trace_id"),
             side=source.get("side"),
         )
-    results: dict[str, dict[str, Any]] = {}
-    errors: list[Exception] = []
-    with ThreadPoolExecutor(max_workers=min(MAX_READ_WORKERS, len(sources))) as pool:
-        futures = {}
-        for source_key, source in sources.items():
-            worker = ingest_t396_source if source.get("trace_id") == "396" else ingest_table_source
-            future = pool.submit(session_worker_guard, worker, session, task_id, source_key, source, progress)
-            futures[future] = source_key
-        for future in as_completed(futures):
-            source_key = futures[future]
-            try:
-                results[source_key] = future.result()
-            except Exception as exc:
-                TASKS.update_file(task_id, source_key, status="error", detail=str(exc))
-                errors.append(exc)
-    if errors:
-        raise errors[0]
-
-    TASKS.update(task_id, pct=91, title="整理字段与 T396 结果", detail="读取完成，正在生成字段清单与速率对比。")
+    # T396 is intentionally a first phase. Its compact aggregation can be
+    # displayed while the much larger T537/T714 files continue to stream into
+    # DuckDB, so users get useful KPI feedback early.
+    t396_sources = {
+        key: source for key, source in sources.items() if source.get("trace_id") == "396"
+    }
+    table_sources = {
+        key: source for key, source in sources.items() if source.get("trace_id") != "396"
+    }
+    results = _ingest_source_group(session, task_id, t396_sources, progress)
     aggregate_a = results.get("A396", {}).get("aggregate_rows", [])
     aggregate_b = results.get("B396", {}).get("aggregate_rows", [])
     comparison = build_t396_comparison(aggregate_a, aggregate_b)
+    session.update(t396=comparison)
+    TASKS.update(
+        task_id,
+        title="T396 速率已就绪，继续读取 T537/T714",
+        detail="T396 小区和用户速率已生成；大表正在并行写入磁盘缓存。",
+        partial={"phase": "t396_ready", "t396": comparison},
+    )
+    results.update(_ingest_source_group(session, task_id, table_sources, progress))
+
+    TASKS.update(task_id, pct=91, title="整理字段清单", detail="读取完成，正在整理 T537/T714 字段清单。")
     schemas: dict[str, Any] = {}
     for trace_id in ("537", "714"):
         side_sources = [
@@ -483,6 +528,78 @@ def run_ingest_task(
         "schemas": schemas,
         "t396": comparison,
     }
+
+
+def run_kpi396_task(
+    session: SessionState,
+    task_id: str,
+    sources: dict[str, dict[str, Any]],
+    groups: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Read de-duplicated T396 sources and compare many A/B groups at once."""
+    if not sources or not groups:
+        raise ValueError("KPI 概览没有可读取的 T396 配置。")
+    available = get_memory_info().get("sys_avail")
+    if available is not None and available < MIN_AVAILABLE_MEMORY_BYTES:
+        raise MemoryError(
+            f"系统可用内存仅 {available / 1024 ** 3:.2f} GB，低于读取安全线。"
+            "请先关闭其他高内存程序或清理旧会话缓存。"
+        )
+    progress = ProgressAggregator(
+        task_id,
+        sources,
+        title="读取并聚合 KPI 所需 T396",
+        scale=0.94,
+    )
+    for source_key, source in sources.items():
+        TASKS.update_file(
+            task_id,
+            source_key,
+            status="queued",
+            pct=0,
+            rows=0,
+            name=source.get("name"),
+            path=source.get("path"),
+            size=source.get("size"),
+            trace_id="396",
+            side="KPI",
+        )
+    results = _ingest_source_group(session, task_id, sources, progress)
+    output_groups: list[dict[str, Any]] = []
+    diffs: list[float] = []
+    for group in groups:
+        ref_a = group.get("A") or {}
+        ref_b = group.get("B") or {}
+        aggregate_a = results.get(str(ref_a.get("source_key") or ""), {}).get("aggregate_rows", [])
+        aggregate_b = results.get(str(ref_b.get("source_key") or ""), {}).get("aggregate_rows", [])
+        comparison = build_t396_comparison(aggregate_a, aggregate_b)
+        if comparison.get("diff_pct") is not None:
+            diffs.append(float(comparison["diff_pct"]))
+        output_groups.append({**group, "comparison": comparison})
+
+    summary = {
+        "group_count": len(output_groups),
+        "source_count": len(results),
+        "improved": sum(1 for value in diffs if value > 0),
+        "declined": sum(1 for value in diffs if value < 0),
+        "flat": sum(1 for value in diffs if value == 0),
+        "average_diff_pct": sum(diffs) / len(diffs) if diffs else None,
+    }
+    payload = {
+        "session_id": session.session_id,
+        "phase": "kpi396",
+        "sources": {key: _public_source(result) for key, result in results.items()},
+        "groups": output_groups,
+        "summary": summary,
+    }
+    session.update(phase="kpi396", kpi396=payload)
+    TASKS.update(
+        task_id,
+        pct=97,
+        title="整理多组 KPI 概览",
+        detail=f"{len(output_groups)} 组 A/B 已完成 T396 小区与用户速率对比。",
+    )
+    return payload
 
 
 def session_worker_guard(worker, *args):
