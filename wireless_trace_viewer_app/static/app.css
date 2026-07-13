@@ -158,6 +158,8 @@ button:disabled { cursor: not-allowed; opacity: .46; }
 .scheme-source-head small { margin-top: 2px; color: var(--muted); font-size: 10px; }
 .scheme-mark { width: 28px; height: 28px; display: grid; flex: 0 0 28px; place-items: center; border-radius: 6px; background: var(--primary-soft); color: var(--primary); font: 750 12px var(--mono); }
 .scheme-source-b .scheme-mark { background: var(--blue-soft); color: var(--blue); }
+.batch-classifier { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; margin-top: 10px; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); }
+.batch-classifier select { height: 34px; font-size: 11px; }
 .scheme-batch-field { margin-top: 10px; }
 .scheme-batch-field select { font-size: 11px; }
 .scheme-source-stats { min-height: 17px; margin: 8px 0 0; overflow: hidden; color: var(--muted); font: 10px/1.55 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
@@ -538,6 +540,7 @@ body.plot-resizing { cursor: nwse-resize; user-select: none; }
   .source-swap { width: 100%; }
   .source-actions { align-items: stretch; flex-direction: column; }
   .source-action-buttons { display: grid; grid-template-columns: 1fr 1fr; }
+  #matchCellBtn { grid-column: 1 / -1; grid-row: 1; }
   .read-heading-actions { width: 100%; justify-content: space-between; }
   .kpi-config-actions { width: 100%; justify-content: space-between; }
   .kpi-group-head { display: none; }

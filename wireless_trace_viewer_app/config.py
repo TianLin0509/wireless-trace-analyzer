@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 
-APP_VERSION = "v0.17.0 Codex"
+APP_VERSION = "v0.17.1 Codex"
 APP_TITLE = f"无线外场 Trace A/B 分析台 {APP_VERSION}"
 
 HOST = os.environ.get("TRACE_HOST", "127.0.0.1")

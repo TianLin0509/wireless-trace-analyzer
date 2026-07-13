@@ -8,6 +8,7 @@ from wireless_trace_viewer_app.catalog import (
     build_catalog,
     build_dual_catalog,
     build_kpi_t396_plan,
+    match_same_cell_batches,
     scan_csv_files,
     selected_sources,
 )
@@ -94,8 +95,8 @@ def test_dual_directory_catalog_keeps_same_timestamp_schemes_separate(tmp_path: 
 
 def test_parse_result_parent_context_is_visible_and_separates_batches(tmp_path: Path) -> None:
     timestamp = "20260710110000"
-    first = tmp_path / "Cell_001" / "Round_03" / "ParseResult"
-    second = tmp_path / "Cell_002" / "Round_07" / "ParseResult"
+    first = tmp_path / "Case_DL_Throughput" / "Cell_001" / "ParseResult"
+    second = tmp_path / "Case_DL_Latency" / "Cell_002" / "ParseResult"
     first.mkdir(parents=True)
     second.mkdir(parents=True)
     frame = pd.DataFrame(
@@ -108,12 +109,81 @@ def test_parse_result_parent_context_is_visible_and_separates_batches(tmp_path: 
 
     assert catalog["batch_count"] == 2
     assert {tuple(batch["context_parts"]) for batch in catalog["batches"]} == {
-        ("Cell_001", "Round_03", "ParseResult"),
-        ("Cell_002", "Round_07", "ParseResult"),
+        ("Case_DL_Throughput", "Cell_001", "ParseResult"),
+        ("Case_DL_Latency", "Cell_002", "ParseResult"),
     }
     assert all(batch["batch_id"] != timestamp for batch in catalog["batches"])
     assert all(batch["context_path"].endswith("ParseResult") for batch in catalog["batches"])
     assert all("Cell_" in batch["context_label"] for batch in catalog["batches"])
+    assert {batch["case_name"] for batch in catalog["batches"]} == {
+        "Case_DL_Throughput",
+        "Case_DL_Latency",
+    }
+    assert {batch["cell_name"] for batch in catalog["batches"]} == {"Cell_001", "Cell_002"}
+    assert {group["case_name"] for group in catalog["case_groups"]} == {
+        "Case_DL_Throughput",
+        "Case_DL_Latency",
+    }
+
+
+def test_same_cell_matcher_pairs_selected_cases_without_cartesian_product(tmp_path: Path) -> None:
+    root_a = tmp_path / "scheme_a"
+    root_b = tmp_path / "scheme_b"
+    frame = pd.DataFrame(
+        [{"dlAmbr": 5001, "dlThpVolRmvLastSlot": 1000, "dlThpTimeRmvLastSlot": 100}]
+    )
+
+    def add(root: Path, case: str, cell: str, timestamp: str, trace: str = "396") -> None:
+        target = root / case / cell / "ParseResult"
+        target.mkdir(parents=True, exist_ok=True)
+        write_trace(target, trace, timestamp, frame)
+
+    # Cell_001 has two timestamps on each side. The newest exact timestamp
+    # should win; Cell_002/003 are not common and must not form cross-cell pairs.
+    add(root_a, "Case_A", "Cell_001", "20260710100000")
+    add(root_a, "Case_A", "Cell_001", "20260710110000")
+    add(root_a, "Case_A", "Cell_002", "20260710110000")
+    add(root_b, "Case_B", "Cell_001", "20260710103000")
+    add(root_b, "Case_B", "Cell_001", "20260710110000")
+    add(root_b, "Case_B", "Cell_003", "20260710110000")
+
+    catalog = build_dual_catalog(
+        {"A": scan_csv_files(root_a), "B": scan_csv_files(root_b)},
+        {"A": root_a, "B": root_b},
+    )
+    case_a = catalog["side_catalogs"]["A"]["case_groups"][0]["case_key"]
+    case_b = catalog["side_catalogs"]["B"]["case_groups"][0]["case_key"]
+    default_a = next(
+        batch
+        for batch in catalog["side_catalogs"]["A"]["batches"]
+        if batch["batch_id"] == catalog["default_selection"]["A"]
+    )
+    default_b = next(
+        batch
+        for batch in catalog["side_catalogs"]["B"]["batches"]
+        if batch["batch_id"] == catalog["default_selection"]["B"]
+    )
+    assert default_a["cell_name"] == default_b["cell_name"] == "Cell_001"
+
+    result = match_same_cell_batches(
+        catalog,
+        case_a=case_a,
+        case_b=case_b,
+        required_trace="396",
+        max_pairs=30,
+    )
+
+    assert result["common_cell_count"] == 1
+    assert result["unmatched_a"] == ["Cell_002"]
+    assert result["unmatched_b"] == ["Cell_003"]
+    assert len(result["pairs"]) == 1
+    pair = result["pairs"][0]
+    assert pair["cell_name"] == "Cell_001"
+    assert pair["A"]["case_name"] == "Case_A"
+    assert pair["B"]["case_name"] == "Case_B"
+    assert pair["A"]["test_time_raw"] == "20260710110000"
+    assert pair["B"]["test_time_raw"] == "20260710110000"
+    assert pair["a_batch_id"] != pair["b_batch_id"]
 
 
 def test_kpi396_multiple_groups_only_reads_t396(tmp_path: Path) -> None:

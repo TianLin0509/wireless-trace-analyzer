@@ -140,3 +140,48 @@ def test_flask_api_async_workflow_and_diagnostics(tmp_path: Path) -> None:
     cleared = client.post(f"/api/session/{session_id}/clear", json={})
     assert cleared.status_code == 200
     assert cleared.get_json()["cleared"] is True
+
+
+def test_match_batches_api_pairs_same_cell_across_cases(tmp_path: Path) -> None:
+    root_a = tmp_path / "scheme_a"
+    root_b = tmp_path / "scheme_b"
+    for target in (
+        root_a / "Case_A" / "Cell_001" / "ParseResult",
+        root_a / "Case_A" / "Cell_002" / "ParseResult",
+        root_b / "Case_B" / "Cell_001" / "ParseResult",
+        root_b / "Case_B" / "Cell_003" / "ParseResult",
+    ):
+        target.mkdir(parents=True)
+        make_fixture(target)
+
+    app = create_app()
+    app.testing = True
+    client = app.test_client()
+    scan = client.post(
+        "/api/scan",
+        json={"path_a": str(root_a), "path_b": str(root_b), "recursive": True},
+    )
+    assert scan.status_code == 200
+    payload = scan.get_json()
+    catalog = payload["catalog"]
+    case_a = catalog["side_catalogs"]["A"]["case_groups"][0]["case_key"]
+    case_b = catalog["side_catalogs"]["B"]["case_groups"][0]["case_key"]
+
+    matched = client.post(
+        f"/api/session/{payload['session_id']}/match-batches",
+        json={
+            "case_a": case_a,
+            "case_b": case_b,
+            "required_trace": "396",
+            "max_pairs": 30,
+        },
+    )
+    assert matched.status_code == 200
+    result = matched.get_json()
+    assert result["common_cell_count"] == 1
+    assert [pair["cell_name"] for pair in result["pairs"]] == ["Cell_001"]
+    assert result["unmatched_a"] == ["Cell_002"]
+    assert result["unmatched_b"] == ["Cell_003"]
+
+    cleared = client.post(f"/api/session/{payload['session_id']}/clear", json={})
+    assert cleared.status_code == 200

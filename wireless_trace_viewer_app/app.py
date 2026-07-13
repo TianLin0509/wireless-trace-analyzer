@@ -14,6 +14,7 @@ from .catalog import (
     build_catalog,
     build_dual_catalog,
     build_kpi_t396_plan,
+    match_same_cell_batches,
     scan_csv_files,
     selected_sources,
 )
@@ -304,6 +305,23 @@ def create_app() -> Flask:
                 raise ValueError(f"未知任务类型：{action or '空'}")
             task_id = TASKS.start(action, session.session_id, worker)
             return json_response({"ok": True, "task_id": task_id})
+        except Exception as exc:
+            return error_response(exc)
+
+    @application.post("/api/session/<session_id>/match-batches")
+    def api_match_batches(session_id: str):
+        try:
+            session = SESSIONS.get(session_id)
+            data = request_data()
+            result = match_same_cell_batches(
+                session.manifest.get("catalog", {}),
+                case_a=str(data.get("case_a") or ""),
+                case_b=str(data.get("case_b") or ""),
+                cell_key=str(data.get("cell_key") or ""),
+                required_trace=str(data.get("required_trace") or "") or None,
+                max_pairs=int(data.get("max_pairs") or 30),
+            )
+            return json_response({"ok": True, **result})
         except Exception as exc:
             return error_response(exc)
 

@@ -55,6 +55,10 @@
               <span>CSV 文件夹路径</span>
               <input id="pathAInput" type="text" autocomplete="off" placeholder="例如 D:\field_trace\scheme_A">
             </label>
+            <div id="schemeClassifierA" class="batch-classifier hidden">
+              <label class="field-label"><span>Case</span><select id="schemeCaseA"></select></label>
+              <label class="field-label"><span>小区</span><select id="schemeCellA"></select></label>
+            </div>
             <label id="schemeBatchFieldA" class="field-label scheme-batch-field hidden">
               <span>测试批次</span>
               <select id="schemeA"></select>
@@ -71,6 +75,10 @@
               <span>CSV 文件夹路径</span>
               <input id="pathBInput" type="text" autocomplete="off" placeholder="例如 D:\field_trace\scheme_B">
             </label>
+            <div id="schemeClassifierB" class="batch-classifier hidden">
+              <label class="field-label"><span>Case</span><select id="schemeCaseB"></select></label>
+              <label class="field-label"><span>小区</span><select id="schemeCellB"></select></label>
+            </div>
             <label id="schemeBatchFieldB" class="field-label scheme-batch-field hidden">
               <span>测试批次</span>
               <select id="schemeB"></select>
@@ -82,10 +90,11 @@
           <label class="check-control compact-check"><input id="recursiveInput" type="checkbox" checked><span>扫描子目录</span></label>
           <div class="source-action-buttons">
             <button id="scanBtn" class="secondary-btn" type="button">扫描 A / B</button>
+            <button id="matchCellBtn" class="secondary-btn" type="button" disabled title="按已选小区匹配；两侧均为全部时自动寻找共同小区">同小区一键匹配</button>
             <button id="startBtn" class="primary-btn start-btn" type="button" disabled>开始分析</button>
           </div>
         </div>
-        <div id="scanMessage" class="inline-message muted">分别扫描两个目录；每个目录按测试时间分组，同一跟踪优先使用 trace_0。</div>
+        <div id="scanMessage" class="inline-message muted">按 Case / 小区 / ParseResult 分类；同一跟踪优先使用 trace_0。</div>
         <div id="batchSummary" class="batch-summary hidden"></div>
       </div>
     </section>
@@ -114,10 +123,10 @@
         <div class="subsection-head">
           <div>
             <h3 id="kpiPanelTitle">多组小区 KPI 概览</h3>
-            <p>每组独立选择 A/B 测试批次；只读取去重后的 T396，不加载 T537/T714。</p>
+            <p id="kpiScopeHint">使用上方选定的 A/B Case，按同名小区批量配对；只读取去重后的 T396。</p>
           </div>
           <div class="kpi-config-actions">
-            <button id="autoPairKpiBtn" class="text-btn" type="button">按目录顺序配对</button>
+            <button id="autoPairKpiBtn" class="text-btn" type="button">按同小区配对</button>
             <button id="addKpiGroupBtn" class="secondary-btn compact-action" type="button">添加对比组</button>
           </div>
         </div>

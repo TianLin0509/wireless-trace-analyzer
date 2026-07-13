@@ -11,6 +11,10 @@ const state = {
   kpiMode: false,
   kpiGroups: [],
   kpiResult: null,
+  batchFilters: {
+    A: { caseKey: "", cellKey: "" },
+    B: { caseKey: "", cellKey: "" },
+  },
   selectedColumns: { "537": new Set(), "714": new Set() },
   availableUsers: [],
   selectedUsers: new Set(),
@@ -127,24 +131,103 @@ function setProgress(prefix, task) {
   $(`${prefix}ProgressDetail`).textContent = task.detail || "";
 }
 
+function batchCategoryLabel(batch) {
+  const names = [batch.case_name, batch.cell_name].filter(Boolean);
+  return names.join(" / ") || batch.context_label || batch.context_path || "未分类";
+}
+
 function batchLabel(batch) {
   const traces = (batch.available_traces || []).map((trace) => `T${trace}`).join(" / ") || "无有效跟踪";
-  const contextValue = batch.context_path || batch.context_label || "";
-  const context = contextValue ? `${contextValue} · ` : "";
-  return `${context}${batch.test_time_short || batch.test_time || "未解析时间"} · ${traces}`;
+  return `${batchCategoryLabel(batch)} · ${batch.test_time_short || batch.test_time || "未解析时间"} · ${traces}`;
 }
 
 function catalogForSide(side) {
   return state.catalog?.side_catalogs?.[side] || state.catalog || { batches: [] };
 }
 
-function renderBatchSelect(select, selected, allowEmptyLabel, side) {
-  const batches = catalogForSide(side).batches || [];
-  select.innerHTML = `<option value="">${allowEmptyLabel}</option>` + batches.map((batch) => (
-    `<option value="${escapeHtml(batch.batch_id)}" title="${escapeHtml(batchPathTitle(side, batch))}">${escapeHtml(batchLabel(batch))}</option>`
+function groupedBatchOptions(side, batches, selected = "") {
+  const groups = new Map();
+  batches.forEach((batch) => {
+    const category = batchCategoryLabel(batch);
+    if (!groups.has(category)) groups.set(category, []);
+    groups.get(category).push(batch);
+  });
+  return Array.from(groups.entries()).map(([category, items]) => (
+    `<optgroup label="${escapeHtml(category)} · ${items.length} 个批次">${items.map((batch) => (
+      `<option value="${escapeHtml(batch.batch_id)}" title="${escapeHtml(batchPathTitle(side, batch))}" ${String(batch.batch_id) === String(selected || "") ? "selected" : ""}>${escapeHtml(batchLabel(batch))}</option>`
+    )).join("")}</optgroup>`
   )).join("");
-  select.value = selected || "";
+}
+
+function filteredBatches(side) {
+  const filters = state.batchFilters[side];
+  return (catalogForSide(side).batches || []).filter((batch) => (
+    (!filters.caseKey || String(batch.case_key || "") === filters.caseKey)
+    && (!filters.cellKey || String(batch.cell_key || "") === filters.cellKey)
+  )).sort((left, right) => {
+    const cellOrder = String(left.cell_name || "").localeCompare(
+      String(right.cell_name || ""),
+      "zh-CN",
+      { numeric: true },
+    );
+    if (cellOrder !== 0) return cellOrder;
+    return String(right.test_time_raw || "").localeCompare(String(left.test_time_raw || ""));
+  });
+}
+
+function renderBatchSelect(select, selected, allowEmptyLabel, side) {
+  const batches = filteredBatches(side);
+  const selectedValue = batches.some((batch) => String(batch.batch_id) === String(selected || ""))
+    ? String(selected)
+    : String(batches[0]?.batch_id || "");
+  select.innerHTML = `<option value="">${allowEmptyLabel}</option>${groupedBatchOptions(side, batches, selectedValue)}`;
+  select.value = selectedValue;
   updateBatchSelectTitle(side);
+}
+
+function caseNameForKey(side, key) {
+  const group = (catalogForSide(side).case_groups || []).find((item) => String(item.case_key || "") === String(key || ""));
+  return group?.case_name || "全部 Case";
+}
+
+function renderClassificationFilters(side, preferredBatchId = "") {
+  const catalog = catalogForSide(side);
+  const batches = catalog.batches || [];
+  const groups = (catalog.case_groups || []).filter((group) => group.case_key);
+  const classifier = $(`schemeClassifier${side}`);
+  const caseSelect = $(`schemeCase${side}`);
+  const cellSelect = $(`schemeCell${side}`);
+  const filters = state.batchFilters[side];
+  const preferred = selectedBatch(side, preferredBatchId);
+  classifier.classList.toggle("hidden", groups.length === 0);
+
+  const validCaseKeys = new Set(groups.map((group) => String(group.case_key)));
+  if (preferred?.case_key) filters.caseKey = String(preferred.case_key);
+  if (filters.caseKey && !validCaseKeys.has(filters.caseKey)) filters.caseKey = "";
+  caseSelect.innerHTML = `<option value="">全部 Case（${groups.length}）</option>${groups.map((group) => (
+    `<option value="${escapeHtml(group.case_key)}" title="${escapeHtml(group.case_path || "")}">${escapeHtml(group.case_name)} · ${group.cell_count} 小区 / ${group.batch_count} 批次</option>`
+  )).join("")}`;
+  caseSelect.value = filters.caseKey;
+
+  const cells = new Map();
+  batches.filter((batch) => !filters.caseKey || String(batch.case_key || "") === filters.caseKey).forEach((batch) => {
+    if (batch.cell_key && !cells.has(String(batch.cell_key))) cells.set(String(batch.cell_key), batch);
+  });
+  const cellItems = Array.from(cells.values()).sort((a, b) => String(a.cell_name).localeCompare(String(b.cell_name), "zh-CN", { numeric: true }));
+  const validCellKeys = new Set(cellItems.map((batch) => String(batch.cell_key)));
+  if (preferred?.cell_key && validCellKeys.has(String(preferred.cell_key))) filters.cellKey = String(preferred.cell_key);
+  if (filters.cellKey && !validCellKeys.has(filters.cellKey)) filters.cellKey = "";
+  cellSelect.innerHTML = `<option value="">全部小区（${cellItems.length}）</option>${cellItems.map((batch) => (
+    `<option value="${escapeHtml(batch.cell_key)}" title="${escapeHtml(batch.cell_path || "")}">${escapeHtml(batch.cell_name)}</option>`
+  )).join("")}`;
+  cellSelect.value = filters.cellKey;
+  renderBatchSelect($(`scheme${side}`), preferredBatchId, `方案 ${side} 留空`, side);
+}
+
+function updateKpiScopeHint() {
+  const caseA = caseNameForKey("A", state.batchFilters.A.caseKey);
+  const caseB = caseNameForKey("B", state.batchFilters.B.caseKey);
+  $("kpiScopeHint").textContent = `匹配范围：A ${caseA} / B ${caseB}；按同名小区生成对比，只读取去重后的 T396。`;
 }
 
 function selectedBatch(side, batchId) {
@@ -154,6 +237,8 @@ function selectedBatch(side, batchId) {
 function batchPathTitle(side, batch) {
   if (!batch) return catalogForSide(side).root || state.catalog?.roots?.[side] || "";
   const paths = [];
+  if (batch.case_name) paths.push(`Case: ${batch.case_name}`);
+  if (batch.cell_name) paths.push(`小区: ${batch.cell_name}`);
   if (batch.context_label) paths.push(`目录层级: ${batch.context_label}`);
   if (batch.context_path) paths.push(`ParseResult: ${batch.context_path}`);
   for (const trace of ["396", "537", "714"]) {
@@ -184,12 +269,17 @@ function renderSchemeScanStats(side) {
     stats.textContent = "未找到 T396 / T537 / T714 CSV";
   } else {
     const ignored = (catalog.batches || []).reduce((sum, batch) => sum + Number(batch.ignored_fragment_count || 0), 0);
-    stats.textContent = `${fileCount} 个 CSV · ${batchCount} 个批次${ignored ? ` · 忽略 ${ignored} 个后续分片` : ""}`;
+    const classified = Number(catalog.case_count || 0) > 0;
+    const classes = classified ? ` · ${catalog.case_count} Case · ${catalog.cell_count} 小区` : "";
+    stats.textContent = `${fileCount} 个 CSV${classes} · ${batchCount} 个批次${ignored ? ` · 忽略 ${ignored} 个后续分片` : ""}`;
   }
 }
 
 function updateStartAvailability() {
   $("startBtn").disabled = !state.sessionId || (!$("schemeA").value && !$("schemeB").value);
+  const hasA = (catalogForSide("A").batches || []).some((batch) => batch.cell_key);
+  const hasB = (catalogForSide("B").batches || []).some((batch) => batch.cell_key);
+  $("matchCellBtn").disabled = !state.sessionId || !hasA || !hasB;
 }
 
 function renderBatchSummary() {
@@ -211,6 +301,11 @@ function renderBatchSummary() {
 }
 
 function kpiGroupLabel(batchA, batchB, index) {
+  const cellA = batchA?.cell_name || "";
+  const cellB = batchB?.cell_name || "";
+  const caseA = batchA?.case_name || "方案 A";
+  const caseB = batchB?.case_name || "方案 B";
+  if (cellA && cellA === cellB) return `${cellA} · ${caseA} vs ${caseB}`;
   const contextA = batchA?.context_label || "";
   const contextB = batchB?.context_label || "";
   const timeA = batchA?.test_time_short || batchA?.test_time || "";
@@ -237,11 +332,8 @@ function createKpiGroup(index, batchA = null, batchB = null) {
 }
 
 function kpiBatchOptions(side, selected) {
-  const empty = `<option value="">方案 ${side} 留空</option>`;
-  const options = (catalogForSide(side).batches || []).map((batch) => (
-    `<option value="${escapeHtml(batch.batch_id)}" title="${escapeHtml(batchPathTitle(side, batch))}" ${String(selected || "") === String(batch.batch_id) ? "selected" : ""}>${escapeHtml(batchLabel(batch))}</option>`
-  )).join("");
-  return empty + options;
+  const batches = catalogForSide(side).batches || [];
+  return `<option value="">方案 ${side} 留空</option>${groupedBatchOptions(side, batches, selected)}`;
 }
 
 function renderKpiGroups() {
@@ -253,7 +345,7 @@ function renderKpiGroups() {
       <label class="kpi-cell"><span>方案 B 批次</span><select data-kpi-field="b_batch_id">${kpiBatchOptions("B", group.b_batch_id)}</select></label>
       <button class="kpi-remove-btn" type="button" data-kpi-remove title="删除此对比组" aria-label="删除此对比组">×</button>
     </div>
-  `).join("") || `<div class="empty-state small">点击“添加对比组”，或按目录顺序自动配对。</div>`;
+  `).join("") || `<div class="empty-state small">点击“按同小区配对”，或手动添加一组。</div>`;
   $("kpiGroupCount").textContent = `${rows.length} 组`;
   $("startKpiBtn").disabled = rows.length === 0;
 }
@@ -265,13 +357,46 @@ function seedKpiGroups() {
   renderKpiGroups();
 }
 
-function autoPairKpiGroups() {
-  const batchesA = catalogForSide("A").batches || [];
-  const batchesB = catalogForSide("B").batches || [];
-  const count = Math.min(30, Math.max(batchesA.length, batchesB.length));
-  state.kpiGroups = Array.from({ length: count }, (_, index) => createKpiGroup(index + 1, batchesA[index], batchesB[index]));
-  renderKpiGroups();
-  toast(`已按目录顺序生成 ${count} 组 KPI 对比。`);
+function refreshKpiGroupsForScope() {
+  state.kpiResult = null;
+  $("kpiResults").classList.add("hidden");
+  if (state.kpiMode) {
+    state.kpiGroups = [];
+    renderKpiGroups();
+  } else {
+    seedKpiGroups();
+  }
+}
+
+async function autoPairKpiGroups() {
+  if (!state.sessionId) { toast("请先扫描目录。"); return; }
+  const button = $("autoPairKpiBtn");
+  setBusy(button, true, "匹配中...");
+  try {
+    const data = await api(`/api/session/${state.sessionId}/match-batches`, {
+      case_a: state.batchFilters.A.caseKey,
+      case_b: state.batchFilters.B.caseKey,
+      required_trace: "396",
+      max_pairs: 30,
+    });
+    state.kpiGroups = (data.pairs || []).map((pair, index) => ({
+      id: `kpi-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}`,
+      label: pair.label,
+      a_batch_id: pair.a_batch_id,
+      b_batch_id: pair.b_batch_id,
+    }));
+    renderKpiGroups();
+    if (!state.kpiGroups.length) {
+      toast("所选 Case 没有同时存在于 A/B 的同名小区 T396。");
+      return;
+    }
+    const unmatched = (data.unmatched_a?.length || 0) + (data.unmatched_b?.length || 0);
+    toast(`已匹配 ${state.kpiGroups.length} 个共同小区${data.truncated ? "（已取前 30 组）" : ""}${unmatched ? `；${unmatched} 个小区仅单侧存在` : ""}。`);
+  } catch (error) {
+    showError(error, "同小区批量匹配失败");
+  } finally {
+    setBusy(button, false);
+  }
 }
 
 function addKpiGroup() {
@@ -289,7 +414,59 @@ function setKpiMode(active) {
   $("kpiModeBtn").textContent = state.kpiMode ? "退出 KPI 概览" : "KPI 概览模式";
   if (state.kpiMode) {
     if (!state.kpiGroups.length) seedKpiGroups();
+    updateKpiScopeHint();
     goStep(1);
+  }
+}
+
+function applyMatchedPair(pair) {
+  for (const side of ["A", "B"]) {
+    const reference = pair[side];
+    if (!reference) continue;
+    state.batchFilters[side].caseKey = String(reference.case_key || "");
+    state.batchFilters[side].cellKey = String(reference.cell_key || "");
+    renderClassificationFilters(side, reference.batch_id);
+  }
+  renderBatchSummary();
+  seedKpiGroups();
+  updateKpiScopeHint();
+}
+
+async function matchCurrentCell() {
+  if (!state.sessionId) { toast("请先扫描 A/B 目录。"); return; }
+  const currentA = selectedBatch("A", $("schemeA").value);
+  const currentB = selectedBatch("B", $("schemeB").value);
+  const explicitCellA = state.batchFilters.A.cellKey;
+  const explicitCellB = state.batchFilters.B.cellKey;
+  if (explicitCellA && explicitCellB && explicitCellA !== explicitCellB) {
+    toast("方案 A/B 选择了不同小区；请将其中一侧改为“全部小区”后再匹配。");
+    return;
+  }
+  const requestedCell = explicitCellA || explicitCellB || "";
+  const button = $("matchCellBtn");
+  setBusy(button, true, "匹配中...");
+  try {
+    const data = await api(`/api/session/${state.sessionId}/match-batches`, {
+      case_a: state.batchFilters.A.caseKey || currentA?.case_key || "",
+      case_b: state.batchFilters.B.caseKey || currentB?.case_key || "",
+      cell_key: requestedCell,
+      max_pairs: 1,
+    });
+    const pair = data.pairs?.[0];
+    if (!pair) {
+      const requestedName = explicitCellA
+        ? currentA?.cell_name
+        : (explicitCellB ? currentB?.cell_name : "共同小区");
+      toast(`${requestedName || "当前小区"} 在 A/B 所选 Case 中没有可配对批次。`);
+      return;
+    }
+    applyMatchedPair(pair);
+    toast(`已匹配 ${pair.cell_name}：${pair.A.case_name} vs ${pair.B.case_name}。`);
+  } catch (error) {
+    showError(error, "同小区匹配失败");
+  } finally {
+    setBusy(button, false);
+    updateStartAvailability();
   }
 }
 
@@ -379,6 +556,7 @@ async function scanDirectory() {
   setBusy($("scanBtn"), true, "扫描中...");
   $("swapSchemesBtn").disabled = true;
   $("startBtn").disabled = true;
+  $("matchCellBtn").disabled = true;
   $("scanMessage").textContent = "正在并行扫描方案 A / B 的 396、537、714 文件...";
   try {
     const data = await api("/api/scan", { path_a: pathA, path_b: pathB, recursive: $("recursiveInput").checked });
@@ -393,6 +571,10 @@ async function scanDirectory() {
     state.t396ReadyTaskId = "";
     state.kpiResult = null;
     state.kpiGroups = [];
+    state.batchFilters = {
+      A: { caseKey: "", cellKey: "" },
+      B: { caseKey: "", cellKey: "" },
+    };
     state.availableUsers = [];
     state.selectedUsers.clear();
     state.userPickerDraft.clear();
@@ -406,8 +588,8 @@ async function scanDirectory() {
     renderMergeInsights();
     renderAnalysisUserPicker();
     setAnalysisUserPickerOpen(false);
-    renderBatchSelect($("schemeA"), data.selection?.A, "方案 A 留空", "A");
-    renderBatchSelect($("schemeB"), data.selection?.B, "方案 B 留空", "B");
+    renderClassificationFilters("A", data.selection?.A);
+    renderClassificationFilters("B", data.selection?.B);
     renderSchemeScanStats("A");
     renderSchemeScanStats("B");
     $("toggleSourceBtn").classList.remove("hidden");
@@ -417,8 +599,8 @@ async function scanDirectory() {
     setKpiMode(false);
     const sideA = catalogForSide("A");
     const sideB = catalogForSide("B");
-    $("scanMessage").textContent = `扫描完成：A ${sideA.file_count || 0} 个文件 / ${sideA.batch_count || 0} 个批次；B ${sideB.file_count || 0} 个文件 / ${sideB.batch_count || 0} 个批次。`;
-    toast("A/B 目录扫描完成，已选择各目录中的最新批次。");
+    $("scanMessage").textContent = `扫描完成：A ${sideA.case_count || 0} Case / ${sideA.cell_count || 0} 小区 / ${sideA.batch_count || 0} 批次；B ${sideB.case_count || 0} Case / ${sideB.cell_count || 0} 小区 / ${sideB.batch_count || 0} 批次。`;
+    toast("扫描完成；可按 Case/小区筛选，或一键匹配同名小区。");
     pollMemoryStatus();
   } catch (error) {
     $("scanMessage").textContent = `扫描失败：${error.message}`;
@@ -426,6 +608,7 @@ async function scanDirectory() {
   } finally {
     setBusy($("scanBtn"), false);
     $("swapSchemesBtn").disabled = false;
+    updateStartAvailability();
   }
 }
 
@@ -1497,6 +1680,10 @@ async function clearSessionCache() {
     state.kpiMode = false;
     state.kpiGroups = [];
     state.kpiResult = null;
+    state.batchFilters = {
+      A: { caseKey: "", cellKey: "" },
+      B: { caseKey: "", cellKey: "" },
+    };
     state.schemas = {};
     state.columnFilters = {};
     state.visibleColumns = new Set();
@@ -1518,11 +1705,18 @@ async function clearSessionCache() {
     $("cacheFiles").innerHTML = `<p class="muted">暂无已读取文件。</p>`;
     $("schemeBatchFieldA").classList.add("hidden");
     $("schemeBatchFieldB").classList.add("hidden");
+    $("schemeClassifierA").classList.add("hidden");
+    $("schemeClassifierB").classList.add("hidden");
+    $("schemeCaseA").innerHTML = "";
+    $("schemeCaseB").innerHTML = "";
+    $("schemeCellA").innerHTML = "";
+    $("schemeCellB").innerHTML = "";
     $("schemeA").innerHTML = "";
     $("schemeB").innerHTML = "";
     $("schemeAStats").textContent = $("pathAInput").value.trim() ? "等待重新扫描" : "允许留空";
     $("schemeBStats").textContent = $("pathBInput").value.trim() ? "等待重新扫描" : "允许留空";
     $("startBtn").disabled = true;
+    $("matchCellBtn").disabled = true;
     $("kpiModeBtn").disabled = true;
     $("kpiGroupRows").innerHTML = "";
     $("kpiPanel").classList.add("hidden");
@@ -1550,7 +1744,24 @@ function bindEvents() {
       if (!state.kpiMode && !state.kpiResult) seedKpiGroups();
     });
   }
+  for (const side of ["A", "B"]) {
+    $(`schemeCase${side}`).addEventListener("change", (event) => {
+      state.batchFilters[side].caseKey = event.target.value;
+      state.batchFilters[side].cellKey = "";
+      renderClassificationFilters(side);
+      renderBatchSummary();
+      refreshKpiGroupsForScope();
+      updateKpiScopeHint();
+    });
+    $(`schemeCell${side}`).addEventListener("change", (event) => {
+      state.batchFilters[side].cellKey = event.target.value;
+      renderBatchSelect($(`scheme${side}`), "", `方案 ${side} 留空`, side);
+      renderBatchSummary();
+      refreshKpiGroupsForScope();
+    });
+  }
   $("swapSchemesBtn").addEventListener("click", swapSchemeDirectories);
+  $("matchCellBtn").addEventListener("click", matchCurrentCell);
   $("startBtn").addEventListener("click", startAnalysis);
   $("kpiModeBtn").addEventListener("click", () => setKpiMode(!state.kpiMode));
   $("autoPairKpiBtn").addEventListener("click", autoPairKpiGroups);
