@@ -23,3 +23,6 @@ jobs:
         run: python -m pytest -q
       - name: JavaScript syntax
         run: node --check wireless_trace_viewer_app/static/app.js
+      - name: Offline incremental update
+        shell: pwsh
+        run: ./tests/test_offline_update.ps1
