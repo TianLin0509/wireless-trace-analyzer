@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.playwright-cli/
+output/
+*.log
+.venv/
+venv/
+.env
+.env.*
+dist/
+build/
+*.duckdb
+*.duckdb.wal
+*.csv.tmp
+.runtime/

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23176b55'/%3E%3Cpath d='M8 10h16M8 16h11M8 22h7' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script src="/plotly.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-line">
+        <span class="brand-mark" aria-hidden="true">RF</span>
+        <div>
+          <strong>Trace A/B 分析</strong>
+          <span class="version">{{ version }}</span>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span id="runtimeStatus" class="runtime-status"><i></i>本机运行</span>
+        <details id="cacheDetails" class="cache-details">
+          <summary><span>缓存</span><b id="cacheSummary">0 B</b></summary>
+          <div class="cache-popover">
+            <div class="cache-head">
+              <strong>当前会话缓存</strong>
+              <button id="clearCacheBtn" class="text-btn danger" type="button">清理</button>
+            </div>
+            <div id="memorySummary" class="memory-summary">等待扫描后显示</div>
+            <div id="cacheFiles" class="cache-files"><p class="muted">暂无已读取文件。</p></div>
+          </div>
+        </details>
+      </div>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section id="sourceSection" class="source-section" aria-labelledby="sourceTitle">
+      <div class="section-heading compact-heading">
+        <div>
+          <span class="eyebrow">数据源</span>
+          <h1 id="sourceTitle">指定方案 A / B 数据目录</h1>
+        </div>
+        <button id="toggleSourceBtn" class="icon-text-btn ghost hidden" type="button" aria-expanded="true">收起</button>
+      </div>
+      <div id="sourceBody">
+        <div class="dual-source-grid">
+          <article class="scheme-source scheme-source-a">
+            <div class="scheme-source-head">
+              <span class="scheme-mark">A</span>
+              <div><b>方案 A</b><small>当前算法 / 基准方案</small></div>
+            </div>
+            <label class="field-label">
+              <span>CSV 文件夹路径</span>
+              <input id="pathAInput" type="text" autocomplete="off" placeholder="例如 D:\field_trace\scheme_A">
+            </label>
+            <label id="schemeBatchFieldA" class="field-label scheme-batch-field hidden">
+              <span>测试批次</span>
+              <select id="schemeA"></select>
+            </label>
+            <p id="schemeAStats" class="scheme-source-stats">允许留空</p>
+          </article>
+          <button id="swapSchemesBtn" class="swap-btn source-swap" type="button" title="互换 A/B 路径并重新扫描" aria-label="互换方案 A 与 B 的目录">A ⇄ B</button>
+          <article class="scheme-source scheme-source-b">
+            <div class="scheme-source-head">
+              <span class="scheme-mark">B</span>
+              <div><b>方案 B</b><small>对比算法 / 可留空</small></div>
+            </div>
+            <label class="field-label">
+              <span>CSV 文件夹路径</span>
+              <input id="pathBInput" type="text" autocomplete="off" placeholder="例如 D:\field_trace\scheme_B">
+            </label>
+            <label id="schemeBatchFieldB" class="field-label scheme-batch-field hidden">
+              <span>测试批次</span>
+              <select id="schemeB"></select>
+            </label>
+            <p id="schemeBStats" class="scheme-source-stats">允许留空</p>
+          </article>
+        </div>
+        <div class="source-actions">
+          <label class="check-control compact-check"><input id="recursiveInput" type="checkbox" checked><span>扫描子目录</span></label>
+          <div class="source-action-buttons">
+            <button id="scanBtn" class="secondary-btn" type="button">扫描 A / B</button>
+            <button id="startBtn" class="primary-btn start-btn" type="button" disabled>开始分析</button>
+          </div>
+        </div>
+        <div id="scanMessage" class="inline-message muted">分别扫描两个目录；每个目录按测试时间分组，同一跟踪优先使用 trace_0。</div>
+        <div id="batchSummary" class="batch-summary hidden"></div>
+      </div>
+    </section>
+
+    <nav class="stepper" aria-label="分析步骤">
+      <button class="step active" data-step="1" type="button"><span>1</span><b>读取数据</b><small>396 / 537 / 714</small></button>
+      <span class="step-line" aria-hidden="true"></span>
+      <button class="step" data-step="2" type="button" disabled><span>2</span><b>数据汇总</b><small>537 锚点关联 714</small></button>
+      <span class="step-line" aria-hidden="true"></span>
+      <button class="step" data-step="3" type="button" disabled><span>3</span><b>数据分析</b><small>明细 / 图表 / 导出</small></button>
+    </nav>
+
+    <section id="step1" class="step-panel active" aria-labelledby="step1Title">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Step 1</span>
+          <h2 id="step1Title">读取数据</h2>
+          <p>最多同时读取两个文件；原始明细写入 DuckDB 磁盘缓存，T396 只保留聚合结果。</p>
+        </div>
+        <span id="readStateBadge" class="status-badge idle">等待开始</span>
+      </div>
+      <div id="readEmpty" class="empty-state">指定方案 A/B 目录，完成扫描后点击“开始分析”。</div>
+      <div id="readProgressArea" class="hidden">
+        <div class="progress-row">
+          <div class="progress-copy"><b id="readProgressTitle">准备读取</b><span id="readProgressPct">0%</span></div>
+          <div class="progress-track"><i id="readProgressBar"></i></div>
+          <p id="readProgressDetail">任务已创建。</p>
+        </div>
+        <div class="data-table-wrap compact-table">
+          <table>
+            <thead><tr><th>文件</th><th>方案 / 跟踪</th><th>进度</th><th>已读行数</th><th>状态</th></tr></thead>
+            <tbody id="readFileRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="step2" class="step-panel" aria-labelledby="step2Title">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Step 2</span>
+          <h2 id="step2Title">数据汇总</h2>
+          <p>T537 保持原行；T714 按 crnti、HH:MM:SS、frm、slot 精确关联，未匹配行保留为 NaN。</p>
+        </div>
+        <span id="mergeStateBadge" class="status-badge idle">等待读取</span>
+      </div>
+
+      <div class="split-layout">
+        <div class="column-config">
+          <div class="subsection-head"><div><h3>选择汇总字段</h3><p>连接键自动保留；714 会添加“714_”前缀。</p></div></div>
+          <div class="column-panes">
+            <div class="column-pane">
+              <div class="column-pane-head"><b>T537 字段</b><span id="count537">0 / 0</span></div>
+              <input id="search537" class="small-input" type="search" placeholder="搜索字段">
+              <div class="bulk-actions"><button data-bulk="537-default" type="button">默认</button><button data-bulk="537-all" type="button">全选</button><button data-bulk="537-none" type="button">清空</button></div>
+              <div id="columns537" class="check-list"></div>
+            </div>
+            <div class="column-pane">
+              <div class="column-pane-head"><b>T714 字段</b><span id="count714">0 / 0</span></div>
+              <input id="search714" class="small-input" type="search" placeholder="搜索字段">
+              <div class="bulk-actions"><button data-bulk="714-default" type="button">默认</button><button data-bulk="714-all" type="button">全选</button><button data-bulk="714-none" type="button">清空</button></div>
+              <div id="columns714" class="check-list"></div>
+            </div>
+          </div>
+          <div class="merge-controls">
+            <label class="check-control"><input id="limitRowsCheck" type="checkbox"><span>限制 T537 锚点行数</span></label>
+            <label class="field-label row-limit"><span>每个方案前 N 行</span><input id="rowLimitInput" type="number" min="1000" step="10000" value="100000" disabled></label>
+            <button id="mergeBtn" class="primary-btn" type="button">一键合并 A / B</button>
+          </div>
+          <div id="mergeProgress" class="progress-row hidden">
+            <div class="progress-copy"><b id="mergeProgressTitle">正在汇总</b><span id="mergeProgressPct">0%</span></div>
+            <div class="progress-track"><i id="mergeProgressBar"></i></div>
+            <p id="mergeProgressDetail">正在准备。</p>
+          </div>
+        </div>
+
+        <aside class="t396-panel" aria-labelledby="t396Title">
+          <div class="subsection-head"><div><h3 id="t396Title">T396 速率对比</h3><p>勾选用户后，可直接带入 Step 3。</p></div></div>
+          <div id="t396Stats" class="stat-strip"></div>
+          <div id="t396Table" class="data-table-wrap compact-table"><div class="empty-state small">读取完成后显示。</div></div>
+          <button id="handoffUsersBtn" class="secondary-btn full-width" type="button" disabled>将选中用户加入后续分析</button>
+        </aside>
+      </div>
+    </section>
+
+    <section id="step3" class="step-panel" aria-labelledby="step3Title">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Step 3</span>
+          <h2 id="step3Title">数据分析</h2>
+          <p>在合并明细的列头完成排序与筛选；选中字段后可直接生成 A/B 图表、统计和可导出结果。</p>
+        </div>
+        <span id="analysisStateBadge" class="status-badge ready">可分析</span>
+      </div>
+
+      <div class="analysis-tabs" role="tablist">
+        <button class="active" data-analysis-tab="table" type="button">合并明细</button>
+        <button data-analysis-tab="overview" type="button">汇总结果</button>
+        <button data-analysis-tab="charts" type="button">图表</button>
+      </div>
+
+      <div id="analysisTable" class="analysis-pane active">
+        <div class="table-toolbar">
+          <div class="side-switch"><button class="active" data-side="A" type="button">方案 A</button><button data-side="B" type="button">方案 B</button></div>
+          <label class="search-box"><span>全局搜索</span><input id="tableSearch" type="search" placeholder="crnti / ambr / MCS..."></label>
+          <div class="column-visibility-control">
+            <button id="columnVisibilityBtn" class="secondary-btn compact-action" type="button" aria-haspopup="true" aria-expanded="false">显示列 <span id="visibleColumnCount">0</span></button>
+            <div id="columnVisibilityMenu" class="visibility-menu hidden">
+              <input id="columnVisibilitySearch" class="small-input" type="search" placeholder="搜索字段">
+              <div class="bulk-actions"><button id="showAllColumnsBtn" type="button">全选</button><button id="showDefaultColumnsBtn" type="button">默认</button></div>
+              <div id="visibleColumnOptions" class="check-list visibility-list"></div>
+            </div>
+          </div>
+          <button id="quickPlotBtn" class="primary-btn compact-action" type="button" disabled>绘制已选列 <span id="selectedMetricCount">0</span></button>
+          <button id="clearTableFiltersBtn" class="secondary-btn compact-action" type="button" disabled>清空条件</button>
+          <label class="page-size"><span>每页</span><select id="pageSize"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select></label>
+          <button id="exportBtn" class="secondary-btn compact-action" type="button">导出筛选结果</button>
+        </div>
+        <div id="tableConditionBar" class="table-condition-bar">
+          <span class="condition-label">列条件</span>
+          <div id="activeFilterChips" class="filter-chips"><span class="muted">点击任意列名右侧箭头进行排序或筛选。</span></div>
+        </div>
+        <div id="mergedTable" class="data-table-wrap wide-table"><div class="empty-state">汇总完成后显示合并明细。</div></div>
+        <div id="tablePager" class="pager"></div>
+      </div>
+
+      <div id="analysisOverview" class="analysis-pane">
+        <div id="userTabs" class="user-tabs"><button class="active" type="button" data-user="__ALL__">小区全量</button></div>
+        <div id="mergeStats" class="stat-strip large"></div>
+        <div id="metricSummaryTable" class="data-table-wrap"><div class="empty-state">选择指标并生成图表后显示统计。</div></div>
+      </div>
+
+      <div id="analysisCharts" class="analysis-pane">
+        <div id="chartUserTabs" class="user-tabs"><button class="active" type="button" data-user="__ALL__">小区全量</button></div>
+        <div class="chart-config">
+          <div class="metric-picker-block">
+            <div class="subsection-head"><div><h3>绘图字段</h3><p>最多选择 8 个；数值字段生成序列/CDF，类别字段生成 A/B 频次分布。</p></div></div>
+            <input id="metricSearch" class="small-input" type="search" placeholder="搜索字段">
+            <div id="metricOptions" class="metric-grid"></div>
+          </div>
+          <button id="plotBtn" class="primary-btn" type="button">一键画图</button>
+        </div>
+        <div id="plotProgress" class="progress-row hidden">
+          <div class="progress-copy"><b id="plotProgressTitle">生成图表</b><span id="plotProgressPct">0%</span></div>
+          <div class="progress-track"><i id="plotProgressBar"></i></div>
+          <p id="plotProgressDetail">正在准备。</p>
+        </div>
+        <div id="figureTabs" class="figure-tabs"></div>
+        <div id="analysisPlot" class="plot-surface"><div class="empty-state">选择指标后点击“一键画图”。</div></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="errorPanel" class="error-panel hidden" role="alert">
+    <div class="error-icon">!</div>
+    <div class="error-content"><strong id="errorTitle">处理失败</strong><p id="errorReason"></p><ul id="errorActions"></ul><details><summary>错误详情</summary><pre id="errorDetail"></pre></details></div>
+    <button id="closeErrorBtn" class="text-btn" type="button" aria-label="关闭错误提示">关闭</button>
+  </div>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <div id="columnMenu" class="column-menu hidden" role="dialog" aria-modal="false" aria-label="列操作"></div>
+
+  <script>window.TRACE_APP_VERSION={{ version|tojson }};</script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
