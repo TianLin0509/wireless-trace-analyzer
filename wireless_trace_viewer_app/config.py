@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 
-APP_VERSION = "v0.17.3 Codex"
+APP_VERSION = "v0.17.4 Codex"
 APP_TITLE = f"无线外场 Trace A/B 分析台 {APP_VERSION}"
 
 HOST = os.environ.get("TRACE_HOST", "127.0.0.1")
@@ -16,6 +16,14 @@ CACHE_ROOT = Path(
         str(Path.home() / ".wireless_trace_cache" / "v016"),
     )
 ).expanduser()
+
+USER_DATA_ROOT = Path(
+    os.environ.get(
+        "TRACE_USER_DATA_DIR",
+        str(Path.home() / ".wireless_trace_analyzer"),
+    )
+).expanduser()
+MERGE_COLUMN_TEMPLATE_PATH = USER_DATA_ROOT / "merge-column-templates.json"
 
 MAX_SCAN_FILES = 5000
 MAX_READ_WORKERS = max(1, min(4, int(os.environ.get("TRACE_READ_WORKERS", "2"))))

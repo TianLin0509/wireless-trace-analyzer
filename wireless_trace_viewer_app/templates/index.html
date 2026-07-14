@@ -186,6 +186,22 @@
 
       <div class="column-config">
           <div class="subsection-head"><div><h3>选择汇总字段</h3><p>连接键自动保留；714 会添加“714_”前缀。</p></div></div>
+          <div class="merge-template-toolbar" aria-label="汇总字段模板">
+            <div class="merge-template-copy">
+              <b>字段模板</b>
+              <span id="mergeTemplateMeta">正在读取本机模板...</span>
+            </div>
+            <label class="merge-template-select">
+              <select id="mergeTemplateSelect" aria-label="已保存的字段模板"><option value="">暂无字段模板</option></select>
+            </label>
+            <button id="loadMergeTemplateBtn" class="secondary-btn" type="button" disabled>载入</button>
+            <button id="saveMergeTemplateBtn" class="secondary-btn" type="button" disabled>另存为</button>
+            <div class="merge-template-actions">
+              <button id="updateMergeTemplateBtn" class="text-btn" type="button" disabled>覆盖</button>
+              <button id="renameMergeTemplateBtn" class="text-btn" type="button" disabled>重命名</button>
+              <button id="deleteMergeTemplateBtn" class="text-btn danger-text" type="button" disabled>删除</button>
+            </div>
+          </div>
           <div class="column-panes">
             <div class="column-pane">
               <div class="column-pane-head"><b>T537 字段</b><span id="count537">0 / 0</span></div>

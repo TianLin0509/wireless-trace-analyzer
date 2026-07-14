@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from wireless_trace_viewer_app import create_app
+from wireless_trace_viewer_app.merge_templates import MergeColumnTemplateStore
 from wireless_trace_viewer_app.state import TASKS
 
 from .test_core import make_fixture
@@ -185,3 +186,68 @@ def test_match_batches_api_pairs_same_cell_across_cases(tmp_path: Path) -> None:
 
     cleared = client.post(f"/api/session/{payload['session_id']}/clear", json={})
     assert cleared.status_code == 200
+
+
+def test_merge_column_template_api_persists_and_manages_templates(tmp_path: Path) -> None:
+    template_path = tmp_path / "merge-column-templates.json"
+    store = MergeColumnTemplateStore(template_path)
+    app = create_app(template_store=store)
+    app.testing = True
+    client = app.test_client()
+
+    empty = client.get("/api/merge-column-templates")
+    assert empty.status_code == 200
+    assert empty.get_json()["templates"] == []
+    assert empty.get_json()["storage_path"] == str(template_path)
+
+    created = client.post(
+        "/api/merge-column-templates",
+        json={
+            "name": "MCS 常用字段",
+            "columns_537": ["tti", "ambr", "cw0SuMcs", "tti"],
+            "columns_714": ["ack0", "mcsOffset[0]", "ack0"],
+        },
+    )
+    assert created.status_code == 201
+    template = created.get_json()["template"]
+    template_id = template["id"]
+    assert template["columns_537"] == ["tti", "ambr", "cw0SuMcs"]
+    assert template["columns_714"] == ["ack0", "mcsOffset[0]"]
+
+    duplicate = client.post(
+        "/api/merge-column-templates",
+        json={
+            "name": "mcs 常用字段",
+            "columns_537": ["tti"],
+            "columns_714": [],
+        },
+    )
+    assert duplicate.status_code == 400
+    assert "已存在" in duplicate.get_json()["error"]
+
+    overwritten = client.post(
+        f"/api/merge-column-templates/{template_id}",
+        json={
+            "columns_537": ["tti", "ambr", "tb0SchMcs"],
+            "columns_714": ["ack0", "compOlla"],
+        },
+    )
+    assert overwritten.status_code == 200
+    assert overwritten.get_json()["template"]["columns_537"][-1] == "tb0SchMcs"
+
+    renamed = client.post(
+        f"/api/merge-column-templates/{template_id}",
+        json={"name": "BLER 与 MCS"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.get_json()["template"]["name"] == "BLER 与 MCS"
+
+    reloaded = MergeColumnTemplateStore(template_path).list_templates()
+    assert len(reloaded) == 1
+    assert reloaded[0]["name"] == "BLER 与 MCS"
+    assert reloaded[0]["columns_714"] == ["ack0", "compOlla"]
+
+    deleted = client.delete(f"/api/merge-column-templates/{template_id}")
+    assert deleted.status_code == 200
+    assert deleted.get_json()["deleted"] is True
+    assert MergeColumnTemplateStore(template_path).list_templates() == []

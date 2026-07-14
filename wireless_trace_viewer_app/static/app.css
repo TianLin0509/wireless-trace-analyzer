@@ -323,6 +323,26 @@ th.plot-selected.filtered { box-shadow: inset 0 -2px 0 var(--primary), inset 0 -
 .mono { font-family: var(--mono); }
 
 .column-config { min-width: 0; }
+.merge-template-toolbar {
+  display: grid;
+  grid-template-columns: minmax(170px, .8fr) minmax(230px, 1.2fr) auto auto auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.merge-template-copy { min-width: 0; }
+.merge-template-copy b { display: block; font-size: 12px; }
+.merge-template-copy span { display: block; overflow: hidden; margin-top: 2px; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.merge-template-select { min-width: 0; }
+.merge-template-select select { width: 100%; height: 36px; font-size: 12px; }
+.merge-template-toolbar > button { min-height: 36px; }
+.merge-template-actions { display: flex; align-items: center; gap: 3px; }
+.merge-template-actions button { min-height: 34px; padding: 0 7px; font-size: 11px; }
+.danger-text { color: var(--danger); }
+.danger-text:hover { background: var(--danger-soft); color: var(--danger); }
 .t396-panel { min-width: 0; padding-left: 18px; border-left: 1px solid var(--line); }
 .t396-read-panel { margin-top: 16px; padding: 16px 0 0; border-top: 1px solid var(--line); border-left: 0; }
 .subsection-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
@@ -565,6 +585,11 @@ body.plot-resizing { cursor: nwse-resize; user-select: none; }
   .step { display: flex; justify-content: center; padding: 5px; }
   .step b, .step small { display: none; }
   .column-panes { grid-template-columns: 1fr; }
+  .merge-template-toolbar { grid-template-columns: 1fr 1fr; align-items: stretch; }
+  .merge-template-copy, .merge-template-select { grid-column: 1 / -1; }
+  .merge-template-toolbar > button { width: 100%; }
+  .merge-template-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); }
+  .merge-template-actions button { min-height: 38px; }
   .merge-controls { grid-template-columns: 1fr; justify-content: stretch; }
   .row-limit { max-width: none; }
   .metric-grid { grid-template-columns: 1fr 1fr; }

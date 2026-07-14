@@ -1,4 +1,4 @@
-"""Wireless Trace Viewer v0.16 package."""
+"""Wireless Trace Viewer package."""
 
 from .app import create_app
 

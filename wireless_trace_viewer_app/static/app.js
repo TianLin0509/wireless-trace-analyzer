@@ -16,6 +16,9 @@ const state = {
     B: { caseKey: "", cellKey: "" },
   },
   selectedColumns: { "537": new Set(), "714": new Set() },
+  mergeTemplates: [],
+  selectedMergeTemplateId: "",
+  mergeTemplateStoragePath: "",
   availableUsers: [],
   selectedUsers: new Set(),
   userPickerDraft: new Set(),
@@ -748,6 +751,148 @@ async function startAnalysis() {
 function selectedColumnCount(trace) {
   const schema = state.schemas?.[trace] || {};
   $(`count${trace}`).textContent = `${state.selectedColumns[trace].size} / ${(schema.columns || []).length}`;
+  renderMergeTemplateControls();
+}
+
+function selectedMergeTemplate() {
+  return state.mergeTemplates.find((item) => item.id === state.selectedMergeTemplateId) || null;
+}
+
+function renderMergeTemplateControls() {
+  const select = $("mergeTemplateSelect");
+  if (!select) return;
+  const hasSchemas = Boolean((state.schemas?.["537"]?.columns || []).length);
+  const has537Selection = state.selectedColumns["537"].size > 0;
+  const selected = selectedMergeTemplate();
+  select.innerHTML = state.mergeTemplates.length
+    ? state.mergeTemplates.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · 537 ${item.columns_537?.length || 0} / 714 ${item.columns_714?.length || 0}</option>`).join("")
+    : `<option value="">暂无字段模板</option>`;
+  if (selected) select.value = selected.id;
+  select.disabled = state.mergeTemplates.length === 0;
+  $("loadMergeTemplateBtn").disabled = !selected || !hasSchemas;
+  $("saveMergeTemplateBtn").disabled = !hasSchemas || !has537Selection;
+  $("updateMergeTemplateBtn").disabled = !selected || !hasSchemas || !has537Selection;
+  $("renameMergeTemplateBtn").disabled = !selected;
+  $("deleteMergeTemplateBtn").disabled = !selected;
+  const countText = state.mergeTemplates.length ? `${state.mergeTemplates.length} 个本机模板` : "当前暂无模板";
+  $("mergeTemplateMeta").textContent = `${countText} · 固定本机保存`;
+  $("mergeTemplateMeta").title = state.mergeTemplateStoragePath || "模板保存在本机用户数据目录";
+}
+
+async function loadMergeColumnTemplates(preferredId = "") {
+  try {
+    const result = await api("/api/merge-column-templates");
+    state.mergeTemplates = result.templates || [];
+    state.mergeTemplateStoragePath = result.storage_path || "";
+    const ids = new Set(state.mergeTemplates.map((item) => item.id));
+    if (preferredId && ids.has(preferredId)) state.selectedMergeTemplateId = preferredId;
+    else if (!ids.has(state.selectedMergeTemplateId)) state.selectedMergeTemplateId = state.mergeTemplates[0]?.id || "";
+    renderMergeTemplateControls();
+  } catch (error) {
+    state.mergeTemplates = [];
+    state.selectedMergeTemplateId = "";
+    renderMergeTemplateControls();
+    showError(error, "字段模板读取失败");
+  }
+}
+
+function currentMergeTemplatePayload(name = "") {
+  return {
+    ...(name ? { name } : {}),
+    columns_537: Array.from(state.selectedColumns["537"]),
+    columns_714: Array.from(state.selectedColumns["714"]),
+  };
+}
+
+function applySelectedMergeTemplate() {
+  const template = selectedMergeTemplate();
+  if (!template) { toast("请先选择字段模板。"); return; }
+  const available537 = new Set(state.schemas?.["537"]?.columns || []);
+  const available714 = new Set(state.schemas?.["714"]?.columns || []);
+  const selected537 = (template.columns_537 || []).filter((column) => available537.has(column));
+  const selected714 = (template.columns_714 || []).filter((column) => available714.has(column));
+  if (!selected537.length) {
+    toast("该模板的 T537 字段在当前数据中均不存在，未载入。");
+    return;
+  }
+  state.selectedColumns["537"] = new Set(selected537);
+  state.selectedColumns["714"] = new Set(selected714);
+  renderColumnList("537");
+  renderColumnList("714");
+  renderMergeInsights();
+  const missing = (template.columns_537?.length || 0) - selected537.length
+    + (template.columns_714?.length || 0) - selected714.length;
+  toast(missing > 0 ? `已载入“${template.name}”，当前 CSV 缺少 ${missing} 个模板字段。` : `已载入字段模板“${template.name}”。`);
+}
+
+async function saveCurrentMergeTemplate() {
+  if (!state.selectedColumns["537"].size) { toast("请至少选择一个 T537 字段。"); return; }
+  const fallback = selectedMergeTemplate()?.name ? `${selectedMergeTemplate().name} 副本` : `字段模板 ${state.mergeTemplates.length + 1}`;
+  const name = window.prompt("请输入字段模板名称", fallback);
+  if (name === null) return;
+  setBusy($("saveMergeTemplateBtn"), true, "保存中...");
+  try {
+    const result = await api("/api/merge-column-templates", currentMergeTemplatePayload(name));
+    await loadMergeColumnTemplates(result.template.id);
+    toast(`已保存字段模板“${result.template.name}”。`);
+  } catch (error) {
+    showError(error, "字段模板保存失败");
+  } finally {
+    setBusy($("saveMergeTemplateBtn"), false);
+    renderMergeTemplateControls();
+  }
+}
+
+async function overwriteSelectedMergeTemplate() {
+  const template = selectedMergeTemplate();
+  if (!template) { toast("请先选择字段模板。"); return; }
+  setBusy($("updateMergeTemplateBtn"), true, "覆盖中...");
+  try {
+    const result = await api(`/api/merge-column-templates/${encodeURIComponent(template.id)}`, currentMergeTemplatePayload());
+    await loadMergeColumnTemplates(result.template.id);
+    toast(`已用当前勾选覆盖“${result.template.name}”。`);
+  } catch (error) {
+    showError(error, "字段模板覆盖失败");
+  } finally {
+    setBusy($("updateMergeTemplateBtn"), false);
+    renderMergeTemplateControls();
+  }
+}
+
+async function renameSelectedMergeTemplate() {
+  const template = selectedMergeTemplate();
+  if (!template) { toast("请先选择字段模板。"); return; }
+  const name = window.prompt("请输入新的模板名称", template.name);
+  if (name === null || name.trim() === template.name) return;
+  setBusy($("renameMergeTemplateBtn"), true, "保存中...");
+  try {
+    const result = await api(`/api/merge-column-templates/${encodeURIComponent(template.id)}`, { name });
+    await loadMergeColumnTemplates(result.template.id);
+    toast(`模板已重命名为“${result.template.name}”。`);
+  } catch (error) {
+    showError(error, "字段模板重命名失败");
+  } finally {
+    setBusy($("renameMergeTemplateBtn"), false);
+    renderMergeTemplateControls();
+  }
+}
+
+async function deleteSelectedMergeTemplate() {
+  const template = selectedMergeTemplate();
+  if (!template) { toast("请先选择字段模板。"); return; }
+  if (!window.confirm(`确定删除字段模板“${template.name}”吗？`)) return;
+  setBusy($("deleteMergeTemplateBtn"), true, "删除中...");
+  try {
+    await api(`/api/merge-column-templates/${encodeURIComponent(template.id)}`, null, { method: "DELETE" });
+    state.selectedMergeTemplateId = "";
+    await loadMergeColumnTemplates();
+    toast(`已删除字段模板“${template.name}”。`);
+  } catch (error) {
+    showError(error, "字段模板删除失败");
+  } finally {
+    setBusy($("deleteMergeTemplateBtn"), false);
+    renderMergeTemplateControls();
+  }
 }
 
 function renderColumnList(trace) {
@@ -1859,6 +2004,15 @@ function bindEvents() {
   }));
   $("limitRowsCheck").addEventListener("change", () => { $("rowLimitInput").disabled = !$("limitRowsCheck").checked; renderMergeInsights(); });
   $("rowLimitInput").addEventListener("input", renderMergeInsights);
+  $("mergeTemplateSelect").addEventListener("change", (event) => {
+    state.selectedMergeTemplateId = event.target.value;
+    renderMergeTemplateControls();
+  });
+  $("loadMergeTemplateBtn").addEventListener("click", applySelectedMergeTemplate);
+  $("saveMergeTemplateBtn").addEventListener("click", saveCurrentMergeTemplate);
+  $("updateMergeTemplateBtn").addEventListener("click", overwriteSelectedMergeTemplate);
+  $("renameMergeTemplateBtn").addEventListener("click", renameSelectedMergeTemplate);
+  $("deleteMergeTemplateBtn").addEventListener("click", deleteSelectedMergeTemplate);
   $("mergeBtn").addEventListener("click", startMerge);
   $("t396Table").addEventListener("change", () => { $("handoffUsersBtn").disabled = !document.querySelector(".t396-user-check:checked"); });
   $("handoffUsersBtn").addEventListener("click", handoffT396Users);
@@ -1975,5 +2129,6 @@ function bindEvents() {
 }
 
 bindEvents();
+loadMergeColumnTemplates();
 renderChartFilterContext();
 setInterval(pollMemoryStatus, 10000);

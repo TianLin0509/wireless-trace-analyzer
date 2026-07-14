@@ -33,6 +33,13 @@
 
 默认地址为 `http://127.0.0.1:3004`。专用 Python 环境位于 `%LOCALAPPDATA%\WirelessTraceAnalyzer\venv`；只有 `requirements.txt` 发生变化时才同步依赖，不会修改系统 Python 或其他项目环境。
 
+## v0.17.4 汇总字段模板
+
+- 第二步的 T537 / T714 合并字段组合可保存为本机模板，并可一键载入，免去每次重复筛选固定分析列。
+- 模板自动从固定用户目录读取，支持另存为、覆盖、重命名和删除；清空分析缓存或安装增量更新不会删除模板。
+- 载入模板时只勾选当前 CSV 实际存在的字段；字段缺失会明确提示，避免旧模板或不同版本字段导致合并失败。
+- 模板文件使用原子写入并校验名称、字段数量和重复名称，异常模板会返回可理解的错误信息。
+
 ## v0.17.3 TTI 默认排序与 T396 影响度
 
 - 合并明细在未指定其他排序时默认按 `tti` 数值升序；清空条件后恢复该顺序，导出的汇总 CSV 也保持相同默认顺序。
@@ -72,6 +79,7 @@
 
 - CSV 路径由用户在页面中分别指定给方案 A/B。
 - 缓存位于 `%USERPROFILE%\.wireless_trace_cache\v016`。
+- 合并字段模板位于 `%USERPROFILE%\.wireless_trace_analyzer\merge-column-templates.json`，不会随分析缓存清理或增量更新删除。
 - 更新备份位于 `%LOCALAPPDATA%\WirelessTraceAnalyzer\offline-updates`。
 - 完整包和增量包都不包含、读取或上传上述 CSV 与缓存目录。
 

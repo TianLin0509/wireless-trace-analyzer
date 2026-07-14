@@ -18,8 +18,9 @@ from .catalog import (
     scan_csv_files,
     selected_sources,
 )
-from .config import APP_TITLE, APP_VERSION
+from .config import APP_TITLE, APP_VERSION, MERGE_COLUMN_TEMPLATE_PATH
 from .engine import run_ingest_task, run_kpi396_task, run_merge_task
+from .merge_templates import MergeColumnTemplateStore
 from .queries import (
     column_profile,
     export_filtered_csv,
@@ -148,9 +149,12 @@ def public_sources(session: SessionState) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: str(row["source_key"]))
 
 
-def create_app() -> Flask:
+def create_app(template_store: MergeColumnTemplateStore | None = None) -> Flask:
     application = Flask(__name__, template_folder="templates", static_folder="static")
     application.config["JSON_AS_ASCII"] = False
+    merge_template_store = template_store or MergeColumnTemplateStore(
+        MERGE_COLUMN_TEMPLATE_PATH
+    )
     start_janitor()
 
     @application.before_request
@@ -181,6 +185,48 @@ def create_app() -> Flask:
     @application.get("/plotly.js")
     def plotly_js():
         return Response(get_plotlyjs(), mimetype="application/javascript; charset=utf-8")
+
+    @application.get("/api/merge-column-templates")
+    def api_merge_column_templates():
+        try:
+            return json_response(
+                {
+                    "ok": True,
+                    "templates": merge_template_store.list_templates(),
+                    "storage_path": str(merge_template_store.path),
+                }
+            )
+        except Exception as exc:
+            return error_response(exc)
+
+    @application.post("/api/merge-column-templates")
+    def api_create_merge_column_template():
+        try:
+            data = request_data()
+            template = merge_template_store.create_template(
+                name=data.get("name"),
+                columns_537=data.get("columns_537"),
+                columns_714=data.get("columns_714"),
+            )
+            return json_response({"ok": True, "template": template}, status=201)
+        except Exception as exc:
+            return error_response(exc)
+
+    @application.post("/api/merge-column-templates/<template_id>")
+    def api_update_merge_column_template(template_id: str):
+        try:
+            template = merge_template_store.update_template(template_id, request_data())
+            return json_response({"ok": True, "template": template})
+        except Exception as exc:
+            return error_response(exc, status=404 if isinstance(exc, KeyError) else 400)
+
+    @application.delete("/api/merge-column-templates/<template_id>")
+    def api_delete_merge_column_template(template_id: str):
+        try:
+            deleted = merge_template_store.delete_template(template_id)
+            return json_response({"ok": True, "deleted": deleted})
+        except Exception as exc:
+            return error_response(exc, status=404 if isinstance(exc, KeyError) else 400)
 
     @application.post("/api/scan")
     def api_scan():
