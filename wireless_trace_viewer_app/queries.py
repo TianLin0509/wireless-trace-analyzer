@@ -164,6 +164,12 @@ def query_rows(
         order_sql = "ORDER BY __source_row"
         if sort_column and sort_column in allowed:
             order_sql = f"ORDER BY {quote_ident(sort_column)} {'ASC' if sort_ascending else 'DESC'} NULLS LAST"
+        elif "tti" in allowed:
+            tti = quote_ident("tti")
+            order_sql = (
+                f"ORDER BY TRY_CAST({tti} AS DOUBLE) ASC NULLS LAST, "
+                f"CAST({tti} AS VARCHAR) ASC, __source_row ASC"
+            )
         requested_columns = [
             str(column)
             for column in (visible_columns or [])
@@ -584,6 +590,21 @@ def _figure_payload(figure: go.Figure) -> dict[str, Any]:
     return json.loads(json.dumps(figure, cls=PlotlyJSONEncoder))
 
 
+def _format_t396_rate(value: Any) -> str:
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if not math.isfinite(rate):
+        return "-"
+    return f"{rate:.6g}"
+
+
+def _scope_subplot_title(scope: dict[str, Any], side: str) -> str:
+    rate = _format_t396_rate((scope.get("rates") or {}).get(side))
+    return f"{scope['label']} · 方案 {side}<br>T396 Rate {rate}"
+
+
 def _split_sequence_figure(
     metric: str,
     scope_rows: list[dict[str, Any]],
@@ -600,7 +621,7 @@ def _split_sequence_figure(
         horizontal_spacing=0.09,
         vertical_spacing=min(0.12, 0.5 / row_count),
         subplot_titles=[
-            f"{row['label']} · 方案 {side}"
+            _scope_subplot_title(row, side)
             for row in scope_rows
             for side in present
         ],
@@ -614,6 +635,7 @@ def _split_sequence_figure(
             y_values = side_values.get("y") or []
             x_title = str(side_values.get("x_title") or "采样序号")
             hover_x = "TTI" if x_title == "TTI" else "样本"
+            rate = _format_t396_rate((scope.get("rates") or {}).get(side))
             figure.add_trace(
                 go.Scatter(
                     x=x_values,
@@ -625,7 +647,7 @@ def _split_sequence_figure(
                     line={"color": colors[side], "width": 1.8},
                     hovertemplate=(
                         f"{scope['label']}<br>{hover_x}=%{{x}}<br>"
-                        f"{metric}=%{{y}}<extra></extra>"
+                        f"{metric}=%{{y}}<br>T396 Rate={rate}<extra></extra>"
                     ),
                 ),
                 row=row_index,
@@ -665,7 +687,7 @@ def _split_cdf_figure(
         horizontal_spacing=0.09,
         vertical_spacing=min(0.12, 0.5 / row_count),
         subplot_titles=[
-            f"{row['label']} · 方案 {side}"
+            _scope_subplot_title(row, side)
             for row in scope_rows
             for side in present
         ],
@@ -675,6 +697,7 @@ def _split_cdf_figure(
         cdfs = scope.get("values", {})
         for column_index, side in enumerate(present, start=1):
             x_values, y_values = cdfs.get(side, ([], []))
+            rate = _format_t396_rate((scope.get("rates") or {}).get(side))
             figure.add_trace(
                 go.Scatter(
                     x=x_values,
@@ -686,7 +709,7 @@ def _split_cdf_figure(
                     line={"color": colors[side], "width": 2},
                     hovertemplate=(
                         f"{scope['label']}<br>值=%{{x}}<br>"
-                        "CDF=%{y:.2f}%<extra></extra>"
+                        f"CDF=%{{y:.2f}}%<br>T396 Rate={rate}<extra></extra>"
                     ),
                 ),
                 row=row_index,
@@ -721,7 +744,7 @@ def _category_frequency_figure(
         horizontal_spacing=0.09,
         vertical_spacing=min(0.12, 0.5 / row_count),
         subplot_titles=[
-            f"{row['label']} · 方案 {side}"
+            _scope_subplot_title(row, side)
             for row in scope_rows
             for side in present
         ],
@@ -731,6 +754,7 @@ def _category_frequency_figure(
         counts = scope.get("values", {})
         for column_index, side in enumerate(present, start=1):
             rows = counts.get(side, [])
+            rate = _format_t396_rate((scope.get("rates") or {}).get(side))
             figure.add_trace(
                 go.Bar(
                     x=[value for value, _ in rows],
@@ -741,7 +765,7 @@ def _category_frequency_figure(
                     marker_color=colors[side],
                     hovertemplate=(
                         f"{scope['label']}<br>取值=%{{x}}<br>"
-                        "行数=%{y}<extra></extra>"
+                        f"行数=%{{y}}<br>T396 Rate={rate}<extra></extra>"
                     ),
                 ),
                 row=row_index,
@@ -799,7 +823,10 @@ def _bler_data(
     }
 
 
-def _bler_figure(values: dict[str, dict[str, float]]) -> Optional[dict[str, Any]]:
+def _bler_figure(
+    values: dict[str, dict[str, float]],
+    rate_lookup: dict[str, dict[str, Any]],
+) -> Optional[dict[str, Any]]:
     if not values:
         return None
     users: list[str] = []
@@ -811,13 +838,23 @@ def _bler_figure(values: dict[str, dict[str, float]]) -> Optional[dict[str, Any]
     for side, color in (("A", COLOR_A), ("B", COLOR_B)):
         if side not in values:
             continue
+        rates = [
+            _format_t396_rate(rate_lookup.get(side, {}).get(user)) for user in users
+        ]
         figure.add_trace(
             go.Bar(
                 x=users,
                 y=[values[side].get(user) for user in users],
                 name=f"方案 {side}",
                 marker_color=color,
-                hovertemplate="用户=%{x}<br>BLER=%{y:.3f}%<extra></extra>",
+                text=[f"Rate {rate}" for rate in rates],
+                textposition="outside",
+                cliponaxis=False,
+                customdata=rates,
+                hovertemplate=(
+                    "用户=%{x}<br>BLER=%{y:.3f}%<br>"
+                    "T396 Rate=%{customdata}<extra></extra>"
+                ),
             )
         )
     figure.update_layout(
@@ -846,6 +883,20 @@ def _normalize_plot_users(user_values: Optional[list[Any]]) -> list[str]:
     return users
 
 
+def _t396_rate_lookup(session: SessionState) -> dict[str, dict[str, Any]]:
+    comparison = session.manifest.get("t396") or {}
+    lookup: dict[str, dict[str, Any]] = {"A": {}, "B": {}}
+    for side in ("A", "B"):
+        lookup[side]["__CELL__"] = comparison.get(f"cell_rate_{side.lower()}")
+    for row in comparison.get("rows") or []:
+        user = str(row.get("user_id") or "").strip()
+        if not user:
+            continue
+        lookup["A"][user] = row.get("rate_a")
+        lookup["B"][user] = row.get("rate_b")
+    return lookup
+
+
 def run_plot_task(
     session: SessionState,
     task_id: str,
@@ -867,6 +918,7 @@ def run_plot_task(
         raise ValueError(f"一次最多选择 {MAX_CHART_METRICS} 个画图字段。")
 
     users = _normalize_plot_users(user_values)
+    rate_lookup = _t396_rate_lookup(session)
     scopes = (
         [{"label": f"ambr {user}", "user": user} for user in users]
         if users
@@ -895,7 +947,17 @@ def run_plot_task(
                 side_context[side] = _side_where(
                     session, side, scope_filters, global_search=global_search
                 )
-            scope_contexts.append({**scope, "sides": side_context})
+            rate_key = scope["user"] if scope["user"] is not None else "__CELL__"
+            scope_contexts.append(
+                {
+                    **scope,
+                    "sides": side_context,
+                    "rates": {
+                        side: rate_lookup.get(side, {}).get(str(rate_key))
+                        for side in side_context
+                    },
+                }
+            )
 
         total_steps = max(1, len(selected) * len(scope_contexts))
         completed_steps = 0
@@ -957,9 +1019,19 @@ def run_plot_task(
                             int(stats["count"]),
                         )
                     sequence_rows.append(
-                        {"label": scope["label"], "values": sequences}
+                        {
+                            "label": scope["label"],
+                            "values": sequences,
+                            "rates": scope["rates"],
+                        }
                     )
-                    cdf_rows.append({"label": scope["label"], "values": cdfs})
+                    cdf_rows.append(
+                        {
+                            "label": scope["label"],
+                            "values": cdfs,
+                            "rates": scope["rates"],
+                        }
+                    )
                     for side in ("A", "B"):
                         for key, value in metric_stats.get(side, {}).items():
                             row[f"{side}_{key}"] = value
@@ -1003,7 +1075,11 @@ def run_plot_task(
                             connection, table, metric, where_sql, parameters
                         )
                     category_rows.append(
-                        {"label": scope["label"], "values": category_counts}
+                        {
+                            "label": scope["label"],
+                            "values": category_counts,
+                            "rates": scope["rates"],
+                        }
                     )
                     for side in ("A", "B"):
                         for key, value in category_stats.get(side, {}).items():
@@ -1022,7 +1098,7 @@ def run_plot_task(
                 )
                 if data:
                     bler_by_side.setdefault(side, {}).update(data)
-        bler_figure = _bler_figure(bler_by_side)
+        bler_figure = _bler_figure(bler_by_side, rate_lookup)
         if bler_figure:
             figures["BLER · 并列柱形图"] = bler_figure
         return {
@@ -1069,13 +1145,20 @@ def export_filtered_csv(
     select_sql = ", ".join(
         _export_select_expression(column, numeric_columns) for column in columns
     )
+    order_sql = ""
+    if "tti" in columns:
+        tti = quote_ident("tti")
+        order_sql = (
+            f" ORDER BY TRY_CAST({tti} AS DOUBLE) ASC NULLS LAST, "
+            f"CAST({tti} AS VARCHAR) ASC, __source_row ASC"
+        )
     connection = _connect_read_only(session)
     try:
         # COPY does not support bound parameters, so create a temporary filtered table using them.
         connection.execute("DROP TABLE IF EXISTS temp.export_rows")
         connection.execute(
             f"CREATE TEMP TABLE export_rows AS SELECT {select_sql} "
-            f"FROM {quote_ident(table)} WHERE {where_sql}",
+            f"FROM {quote_ident(table)} WHERE {where_sql}{order_sql}",
             parameters,
         )
         connection.execute(

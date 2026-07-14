@@ -354,6 +354,14 @@ def build_t396_comparison(
 ) -> dict[str, Any]:
     by_a = {str(row["user_id"]): row for row in aggregate_a}
     by_b = {str(row["user_id"]): row for row in aggregate_b}
+    total_time_a = sum(float(row.get("sum_time") or 0) for row in aggregate_a)
+    total_time_b = sum(float(row.get("sum_time") or 0) for row in aggregate_b)
+
+    def time_share(row: dict[str, Any], total_time: float) -> Optional[float]:
+        if not row or total_time <= 0:
+            return None
+        return float(row.get("sum_time") or 0) / total_time * 100.0
+
     users = sorted(
         set(by_a) | set(by_b),
         key=lambda value: (
@@ -363,8 +371,10 @@ def build_t396_comparison(
     )
     rows: list[dict[str, Any]] = []
     for user in users:
-        rate_a = by_a.get(user, {}).get("rate")
-        rate_b = by_b.get(user, {}).get("rate")
+        user_a = by_a.get(user, {})
+        user_b = by_b.get(user, {})
+        rate_a = user_a.get("rate")
+        rate_b = user_b.get("rate")
         diff_pct = (
             (float(rate_b) - float(rate_a)) / float(rate_a) * 100
             if rate_a not in (None, 0) and rate_b is not None
@@ -376,10 +386,21 @@ def build_t396_comparison(
                 "rate_a": rate_a,
                 "rate_b": rate_b,
                 "diff_pct": diff_pct,
-                "sum_time_a": by_a.get(user, {}).get("sum_time"),
-                "sum_time_b": by_b.get(user, {}).get("sum_time"),
+                "sum_time_a": user_a.get("sum_time"),
+                "sum_time_b": user_b.get("sum_time"),
+                "time_share_a": time_share(user_a, total_time_a),
+                "time_share_b": time_share(user_b, total_time_b),
             }
         )
+    rows.sort(
+        key=lambda row: (
+            -max(
+                float(row.get("time_share_a") or 0),
+                float(row.get("time_share_b") or 0),
+            ),
+            str(row["user_id"]),
+        )
+    )
 
     def cell_rate(items: list[dict[str, Any]]) -> Optional[float]:
         total_vol = sum(float(row.get("sum_vol") or 0) for row in items)
@@ -400,6 +421,8 @@ def build_t396_comparison(
         "diff_pct": diff_pct,
         "users_a": len(aggregate_a),
         "users_b": len(aggregate_b),
+        "total_time_a": total_time_a,
+        "total_time_b": total_time_b,
         "rows": rows,
     }
 
@@ -907,6 +930,8 @@ def _run_merge_task_locked(
             "common_columns": ordered_common,
             "numeric_columns": ordered_numeric,
             "default_metrics": default_metrics,
+            "default_sort_column": "tti" if "tti" in ordered_common else None,
+            "default_sort_ascending": True,
         }
         session.update(phase="merged", merge=merge_manifest)
         return {

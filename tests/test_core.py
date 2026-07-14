@@ -13,6 +13,7 @@ from wireless_trace_viewer_app.catalog import (
     selected_sources,
 )
 from wireless_trace_viewer_app.engine import (
+    build_t396_comparison,
     run_kpi396_task,
     run_ingest_task,
     run_merge_task,
@@ -67,6 +68,24 @@ def make_fixture(root: Path) -> None:
         pd.DataFrame([{"crnti": 9999, "HH:MM:SS": "00:00:00", "frm": 0, "slotNo": 0}]),
         index=1,
     )
+
+
+def test_t396_time_share_distinguishes_missing_side_from_zero_share() -> None:
+    result = build_t396_comparison(
+        [
+            {"user_id": "5001", "sum_vol": 750, "sum_time": 75, "rate": 10},
+            {"user_id": "5002", "sum_vol": 450, "sum_time": 25, "rate": 18},
+        ],
+        [
+            {"user_id": "5002", "sum_vol": 2000, "sum_time": 100, "rate": 20},
+        ],
+    )
+
+    rows = {row["user_id"]: row for row in result["rows"]}
+    assert rows["5001"]["time_share_a"] == 75.0
+    assert rows["5001"]["time_share_b"] is None
+    assert rows["5002"]["time_share_a"] == 25.0
+    assert rows["5002"]["time_share_b"] == 100.0
 
 
 def test_dual_directory_catalog_keeps_same_timestamp_schemes_separate(tmp_path: Path) -> None:
@@ -260,6 +279,11 @@ def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
         assert ingest["phase"] == "read"
         assert ingest["sources"]["A537"]["rows"] == 3
         assert ingest["t396"]["cell_rate_b"] > ingest["t396"]["cell_rate_a"]
+        t396_rows = {row["user_id"]: row for row in ingest["t396"]["rows"]}
+        assert t396_rows["5001"]["time_share_a"] == 50.0
+        assert t396_rows["5001"]["time_share_b"] == 50.0
+        assert sum(row["time_share_a"] for row in t396_rows.values()) == 100.0
+        assert sum(row["time_share_b"] for row in t396_rows.values()) == 100.0
         assert TASKS.get("test-ingest")["files"]["A537"]["path"] == sources["A537"]["path"]
         assert TASKS.get("test-ingest")["partial"]["phase"] == "t396_ready"
         assert TASKS.get("test-ingest")["partial"]["t396"]["available"] is True
@@ -281,6 +305,19 @@ def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
         assert "tti" in merged["common_columns"]
         assert "ambr" in merged["common_columns"]
         assert "714_mcsOffset0_scaled" in merged["numeric_columns"]
+
+        default_page = query_rows(
+            session,
+            side="A",
+            page=1,
+            page_size=100,
+            filters=[],
+            global_search="",
+            sort_column=None,
+            sort_ascending=False,
+            visible_columns=["tti", "ambr"],
+        )
+        assert [int(row["tti"]) for row in default_page["rows"]] == [1, 2, 3]
 
         page = query_rows(
             session,
@@ -362,15 +399,18 @@ def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
         multi_sequence = multi_user_plots["figures"]["cw0SuMcs · 序列"]
         assert len(multi_sequence["data"]) == 4
         assert [item["text"] for item in multi_sequence["layout"]["annotations"]] == [
-            "ambr 5001 · 方案 A",
-            "ambr 5001 · 方案 B",
-            "ambr 5002 · 方案 A",
-            "ambr 5002 · 方案 B",
+            "ambr 5001 · 方案 A<br>T396 Rate 10",
+            "ambr 5001 · 方案 B<br>T396 Rate 12",
+            "ambr 5002 · 方案 A<br>T396 Rate 18",
+            "ambr 5002 · 方案 B<br>T396 Rate 20",
         ]
         assert multi_sequence["layout"]["xaxis3"]["title"]["text"] == "TTI"
         assert multi_sequence["layout"]["height"] > 520
         multi_frequency = multi_user_plots["figures"]["schType · 频次"]
         assert len(multi_frequency["data"]) == 4
+        multi_bler = multi_user_plots["figures"]["BLER · 并列柱形图"]
+        assert multi_bler["data"][0]["text"] == ["Rate 10", "Rate 18"]
+        assert multi_bler["data"][1]["text"] == ["Rate 12", "Rate 20"]
         assert {row["scope"] for row in multi_user_plots["summary_rows"]} == {
             "ambr 5001",
             "ambr 5002",
@@ -386,6 +426,10 @@ def test_end_to_end_ingest_merge_query_plot_export(tmp_path: Path) -> None:
         exported = pd.read_csv(export_path, encoding="utf-8-sig")
         assert len(exported) == 1
         assert str(exported.iloc[0]["ambr"]) in {"5001", "5001.0"}
+
+        all_export_path = export_filtered_csv(session, side="A", filters=[])
+        all_exported = pd.read_csv(all_export_path, encoding="utf-8-sig")
+        assert all_exported["tti"].astype(int).tolist() == [1, 2, 3]
     finally:
         SESSIONS.clear(session.session_id)
 

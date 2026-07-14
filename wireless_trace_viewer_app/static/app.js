@@ -497,10 +497,10 @@ function renderKpiResults() {
   $("kpiUserDetails").innerHTML = groups.map((group) => {
     const comparison = group.comparison || {};
     const rows = comparison.rows || [];
-    return `<details><summary><b>${escapeHtml(group.label)} · 用户级 Rate</b><span>${rows.length} 个用户</span></summary><div class="data-table-wrap"><table><thead><tr><th>ambr</th><th>Rate A</th><th>Rate B</th><th>B-A 差异</th><th>Time A</th><th>Time B</th></tr></thead><tbody>${rows.slice(0, 500).map((row) => {
+    return `<details><summary><b>${escapeHtml(group.label)} · 用户级 Rate / TTI占比</b><span>${rows.length} 个用户</span></summary><div class="data-table-wrap"><table><thead><tr><th>ambr</th><th>Rate A</th><th>TTI占比 A</th><th>Rate B</th><th>TTI占比 B</th><th>B-A 差异</th><th>Time A</th><th>Time B</th></tr></thead><tbody>${rows.slice(0, 500).map((row) => {
       const diff = Number(row.diff_pct);
       const cls = Number.isFinite(diff) ? (diff > 0 ? "rate-up" : diff < 0 ? "rate-down" : "") : "";
-      return `<tr><td class="mono">${escapeHtml(row.user_id)}</td><td>${formatNumber(row.rate_a, 6)}</td><td>${formatNumber(row.rate_b, 6)}</td><td class="${cls}">${row.diff_pct == null ? "-" : `${formatNumber(row.diff_pct, 3)}%`}</td><td>${formatNumber(row.sum_time_a, 3)}</td><td>${formatNumber(row.sum_time_b, 3)}</td></tr>`;
+      return `<tr><td class="mono">${escapeHtml(row.user_id)}</td><td>${formatNumber(row.rate_a, 6)}</td><td>${row.time_share_a == null ? "-" : `${formatNumber(row.time_share_a, 2)}%`}</td><td>${formatNumber(row.rate_b, 6)}</td><td>${row.time_share_b == null ? "-" : `${formatNumber(row.time_share_b, 2)}%`}</td><td class="${cls}">${row.diff_pct == null ? "-" : `${formatNumber(row.diff_pct, 3)}%`}</td><td>${formatNumber(row.sum_time_a, 3)}</td><td>${formatNumber(row.sum_time_b, 3)}</td></tr>`;
     }).join("")}</tbody></table></div></details>`;
   }).join("");
   $("kpiResults").classList.remove("hidden");
@@ -581,6 +581,8 @@ async function scanDirectory() {
     state.activeUser = "__ALL__";
     state.columnFilters = {};
     state.visibleColumns = new Set();
+    state.sortColumn = "";
+    state.sortAscending = true;
     state.lastMetrics = [];
     state.figures = {};
     state.metricSummaryRows = [];
@@ -711,6 +713,8 @@ async function startAnalysis() {
   state.t396ReadyTaskId = "";
   state.kpiResult = null;
   state.selectedColumns = { "537": new Set(), "714": new Set() };
+  state.sortColumn = "";
+  state.sortAscending = true;
   renderReadInsights();
   renderMergeInsights();
   goStep(1);
@@ -888,10 +892,17 @@ function renderT396() {
     $("handoffUsersBtn").disabled = true;
     return;
   }
-  $("t396Table").innerHTML = `<table><thead><tr><th></th><th>ambr</th><th>Rate A</th><th>Rate B</th><th>差异</th></tr></thead><tbody>${rows.slice(0, 500).map((row) => {
+  const shareCell = (row, side) => {
+    const rawShare = row[`time_share_${side}`];
+    const share = rawShare == null ? Number.NaN : Number(rawShare);
+    const width = Number.isFinite(share) ? Math.max(0, Math.min(100, share)) : 0;
+    const sumTime = formatNumber(row[`sum_time_${side}`], 3);
+    return `<div class="tti-share" data-side="${side.toUpperCase()}" title="ΣTime ${sumTime}"><span>${Number.isFinite(share) ? `${formatNumber(share, 2)}%` : "-"}</span><i aria-hidden="true"><b style="width:${width}%"></b></i></div>`;
+  };
+  $("t396Table").innerHTML = `<table><thead><tr><th></th><th>ambr</th><th>Rate A</th><th>TTI占比 A</th><th>Rate B</th><th>TTI占比 B</th><th>差异</th></tr></thead><tbody>${rows.slice(0, 500).map((row) => {
     const diff = Number(row.diff_pct);
     const cls = Number.isFinite(diff) ? (diff > 0 ? "rate-up" : diff < 0 ? "rate-down" : "") : "";
-    return `<tr><td><input type="checkbox" class="t396-user-check" value="${escapeHtml(row.user_id)}"></td><td class="mono">${escapeHtml(row.user_id)}</td><td>${formatNumber(row.rate_a, 6)}</td><td>${formatNumber(row.rate_b, 6)}</td><td class="${cls}">${row.diff_pct == null ? "-" : `${formatNumber(row.diff_pct, 3)}%`}</td></tr>`;
+    return `<tr><td><input type="checkbox" class="t396-user-check" value="${escapeHtml(row.user_id)}"></td><td class="mono">${escapeHtml(row.user_id)}</td><td>${formatNumber(row.rate_a, 6)}</td><td>${shareCell(row, "a")}</td><td>${formatNumber(row.rate_b, 6)}</td><td>${shareCell(row, "b")}</td><td class="${cls}">${row.diff_pct == null ? "-" : `${formatNumber(row.diff_pct, 3)}%`}</td></tr>`;
   }).join("")}</tbody></table>`;
   $("handoffUsersBtn").disabled = true;
 }
@@ -935,6 +946,8 @@ async function startMerge() {
     });
     const result = await pollTask(start.task_id, "merge", { progress: (task) => setProgress("merge", task) });
     state.merge = result;
+    state.sortColumn = result.default_sort_column || "";
+    state.sortAscending = result.default_sort_ascending !== false;
     setProgress("merge", { pct: 100, title: "汇总完成", detail: "A/B 汇总表已写入 DuckDB。" });
     setBadge("mergeStateBadge", "汇总完成", "ready");
     renderMergeInsights();
@@ -1165,8 +1178,8 @@ async function removeColumnFilter(column) {
 async function clearAllTableConditions() {
   state.columnFilters = {};
   $("tableSearch").value = "";
-  state.sortColumn = "";
-  state.sortAscending = true;
+  state.sortColumn = state.merge?.default_sort_column || "";
+  state.sortAscending = state.merge?.default_sort_ascending !== false;
   renderFilterChips();
   markPlotsStale();
   closeColumnMenu();
@@ -1724,6 +1737,8 @@ async function clearSessionCache() {
     state.schemas = {};
     state.columnFilters = {};
     state.visibleColumns = new Set();
+    state.sortColumn = "";
+    state.sortAscending = true;
     state.availableUsers = [];
     state.selectedUsers.clear();
     state.userPickerDraft.clear();
