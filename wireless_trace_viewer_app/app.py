@@ -19,7 +19,9 @@ from .catalog import (
     selected_sources,
 )
 from .config import APP_TITLE, APP_VERSION, MERGE_COLUMN_TEMPLATE_PATH
-from .engine import run_ingest_task, run_kpi396_task, run_merge_task
+from .config import ANALYSIS_RECIPE_PATH
+from .analysis_recipes import AnalysisRecipeStore
+from .engine import SOURCE_CACHE, run_ingest_task, run_kpi396_task, run_merge_task
 from .merge_templates import MergeColumnTemplateStore
 from .queries import (
     column_profile,
@@ -27,6 +29,7 @@ from .queries import (
     filter_options,
     query_rows,
     run_plot_task,
+    tti_preview,
 )
 from .state import SESSIONS, TASKS, SessionState, start_janitor
 from .utils import get_memory_info, resolve_path
@@ -144,17 +147,25 @@ def public_sources(session: SessionState) -> list[dict[str, Any]]:
                 "database_bytes": source.get("database_bytes", 0),
                 "storage": source.get("storage", "duckdb"),
                 "path": source.get("path"),
+                "cache_hit": bool(source.get("cache_hit")),
+                "cache_reason": source.get("cache_reason"),
+                "fingerprint": source.get("fingerprint"),
+                "quality": source.get("quality") or {},
             }
         )
     return sorted(rows, key=lambda row: str(row["source_key"]))
 
 
-def create_app(template_store: MergeColumnTemplateStore | None = None) -> Flask:
+def create_app(
+    template_store: MergeColumnTemplateStore | None = None,
+    recipe_store: AnalysisRecipeStore | None = None,
+) -> Flask:
     application = Flask(__name__, template_folder="templates", static_folder="static")
     application.config["JSON_AS_ASCII"] = False
     merge_template_store = template_store or MergeColumnTemplateStore(
         MERGE_COLUMN_TEMPLATE_PATH
     )
+    analysis_recipe_store = recipe_store or AnalysisRecipeStore(ANALYSIS_RECIPE_PATH)
     start_janitor()
 
     @application.before_request
@@ -228,6 +239,46 @@ def create_app(template_store: MergeColumnTemplateStore | None = None) -> Flask:
         except Exception as exc:
             return error_response(exc, status=404 if isinstance(exc, KeyError) else 400)
 
+    @application.get("/api/analysis-recipes")
+    def api_analysis_recipes():
+        try:
+            return json_response(
+                {
+                    "ok": True,
+                    "recipes": analysis_recipe_store.list_recipes(),
+                    "storage_path": str(analysis_recipe_store.path),
+                }
+            )
+        except Exception as exc:
+            return error_response(exc)
+
+    @application.post("/api/analysis-recipes")
+    def api_create_analysis_recipe():
+        try:
+            data = request_data()
+            recipe = analysis_recipe_store.create_recipe(
+                data.get("name"), data.get("workspace")
+            )
+            return json_response({"ok": True, "recipe": recipe}, status=201)
+        except Exception as exc:
+            return error_response(exc)
+
+    @application.post("/api/analysis-recipes/<recipe_id>")
+    def api_update_analysis_recipe(recipe_id: str):
+        try:
+            recipe = analysis_recipe_store.update_recipe(recipe_id, request_data())
+            return json_response({"ok": True, "recipe": recipe})
+        except Exception as exc:
+            return error_response(exc, status=404 if isinstance(exc, KeyError) else 400)
+
+    @application.delete("/api/analysis-recipes/<recipe_id>")
+    def api_delete_analysis_recipe(recipe_id: str):
+        try:
+            deleted = analysis_recipe_store.delete_recipe(recipe_id)
+            return json_response({"ok": True, "deleted": deleted})
+        except Exception as exc:
+            return error_response(exc, status=404 if isinstance(exc, KeyError) else 400)
+
     @application.post("/api/scan")
     def api_scan():
         try:
@@ -282,76 +333,96 @@ def create_app(template_store: MergeColumnTemplateStore | None = None) -> Flask:
         except Exception as exc:
             return error_response(exc)
 
+    def prepare_task(
+        data: dict[str, Any],
+    ) -> tuple[str, SessionState, Callable[[str], dict[str, Any]], dict[str, Any]]:
+        session = require_session(data)
+        action = str(data.get("action") or "")
+        worker: Callable[[str], dict[str, Any]]
+        request_payload = json.loads(json.dumps(data, ensure_ascii=False))
+        request_payload["session_id"] = session.session_id
+        if action == "ingest":
+            selection = data.get("selection") or session.manifest.get("selection") or {}
+            selection = {"A": selection.get("A") or None, "B": selection.get("B") or None}
+            catalog = session.manifest.get("catalog", {})
+            if (
+                not catalog.get("side_catalogs")
+                and selection["A"]
+                and selection["A"] == selection["B"]
+            ):
+                raise ValueError("方案 A 与方案 B 不能选择同一个测试时间。")
+            sources = selected_sources(catalog, selection)
+            if not sources:
+                raise ValueError("方案 A/B 均为空，没有可读取的文件。")
+            duplicate_traces = [
+                trace_id
+                for trace_id in ("396", "537", "714")
+                if sources.get(f"A{trace_id}")
+                and sources.get(f"B{trace_id}")
+                and sources[f"A{trace_id}"].get("path")
+                == sources[f"B{trace_id}"].get("path")
+            ]
+            if duplicate_traces:
+                traces = "、".join(f"T{trace_id}" for trace_id in duplicate_traces)
+                raise ValueError(
+                    f"方案 A/B 指向了相同源文件：{traces}。请调整目录或测试批次。"
+                )
+            request_payload["selection"] = selection
+            session.update(selection=selection, sources={}, phase="reading")
+            worker = lambda task_id: run_ingest_task(session, task_id, sources)
+        elif action == "kpi396":
+            groups = data.get("groups") or []
+            if not isinstance(groups, list):
+                raise ValueError("KPI 多组配置格式无效。")
+            catalog = session.manifest.get("catalog", {})
+            sources, resolved_groups = build_kpi_t396_plan(catalog, groups)
+            session.update(sources={}, phase="reading_kpi", kpi396={})
+            worker = lambda task_id: run_kpi396_task(
+                session,
+                task_id,
+                sources,
+                resolved_groups,
+            )
+        elif action == "merge":
+            columns_537 = [str(value) for value in (data.get("columns_537") or [])]
+            columns_714 = [str(value) for value in (data.get("columns_714") or [])]
+            merge_all_rows = bool(data.get("merge_all_rows", False))
+            row_limit = 0 if merge_all_rows else max(0, int(data.get("row_limit") or 0))
+            if not columns_537:
+                raise ValueError("请至少选择一个 T537 字段。连接键会自动保留。")
+            request_payload["merge_all_rows"] = merge_all_rows
+            request_payload["row_limit"] = row_limit
+            session.update(phase="merging")
+            worker = lambda task_id: run_merge_task(
+                session, task_id, columns_537, columns_714, row_limit
+            )
+        elif action == "plot":
+            metrics = [str(value) for value in (data.get("metrics") or [])]
+            filters = data.get("filters") or []
+            global_search = str(data.get("global_search") or "")
+            user_values = data.get("user_values") or []
+            worker = lambda task_id: run_plot_task(
+                session, task_id, metrics, filters, global_search, user_values
+            )
+        else:
+            raise ValueError(f"未知任务类型：{action or '空'}")
+        return action, session, worker, request_payload
+
+    def start_prepared_task(data: dict[str, Any]) -> str:
+        action, session, worker, request_payload = prepare_task(data)
+        return TASKS.start(
+            action,
+            session.session_id,
+            worker,
+            request_payload=request_payload,
+        )
+
     @application.post("/api/task/start")
     def api_task_start():
         try:
-            data = request_data()
-            session = require_session(data)
-            action = str(data.get("action") or "")
-            worker: Callable[[str], dict[str, Any]]
-            if action == "ingest":
-                selection = data.get("selection") or session.manifest.get("selection") or {}
-                selection = {"A": selection.get("A") or None, "B": selection.get("B") or None}
-                catalog = session.manifest.get("catalog", {})
-                if (
-                    not catalog.get("side_catalogs")
-                    and selection["A"]
-                    and selection["A"] == selection["B"]
-                ):
-                    raise ValueError("方案 A 与方案 B 不能选择同一个测试时间。")
-                sources = selected_sources(catalog, selection)
-                if not sources:
-                    raise ValueError("方案 A/B 均为空，没有可读取的文件。")
-                duplicate_traces = [
-                    trace_id
-                    for trace_id in ("396", "537", "714")
-                    if sources.get(f"A{trace_id}")
-                    and sources.get(f"B{trace_id}")
-                    and sources[f"A{trace_id}"].get("path")
-                    == sources[f"B{trace_id}"].get("path")
-                ]
-                if duplicate_traces:
-                    traces = "、".join(f"T{trace_id}" for trace_id in duplicate_traces)
-                    raise ValueError(
-                        f"方案 A/B 指向了相同源文件：{traces}。请调整目录或测试批次。"
-                    )
-                session.update(selection=selection, sources={}, phase="reading")
-                worker = lambda task_id: run_ingest_task(session, task_id, sources)
-            elif action == "kpi396":
-                groups = data.get("groups") or []
-                if not isinstance(groups, list):
-                    raise ValueError("KPI 多组配置格式无效。")
-                catalog = session.manifest.get("catalog", {})
-                sources, resolved_groups = build_kpi_t396_plan(catalog, groups)
-                session.update(sources={}, phase="reading_kpi", kpi396={})
-                worker = lambda task_id: run_kpi396_task(
-                    session,
-                    task_id,
-                    sources,
-                    resolved_groups,
-                )
-            elif action == "merge":
-                columns_537 = [str(value) for value in (data.get("columns_537") or [])]
-                columns_714 = [str(value) for value in (data.get("columns_714") or [])]
-                row_limit = max(0, int(data.get("row_limit") or 0))
-                if not columns_537:
-                    raise ValueError("请至少选择一个 T537 字段。连接键会自动保留。")
-                session.update(phase="merging")
-                worker = lambda task_id: run_merge_task(
-                    session, task_id, columns_537, columns_714, row_limit
-                )
-            elif action == "plot":
-                metrics = [str(value) for value in (data.get("metrics") or [])]
-                filters = data.get("filters") or []
-                global_search = str(data.get("global_search") or "")
-                user_values = data.get("user_values") or []
-                worker = lambda task_id: run_plot_task(
-                    session, task_id, metrics, filters, global_search, user_values
-                )
-            else:
-                raise ValueError(f"未知任务类型：{action or '空'}")
-            task_id = TASKS.start(action, session.session_id, worker)
-            return json_response({"ok": True, "task_id": task_id})
+            return json_response(
+                {"ok": True, "task_id": start_prepared_task(request_data())}
+            )
         except Exception as exc:
             return error_response(exc)
 
@@ -380,6 +451,40 @@ def create_app(template_store: MergeColumnTemplateStore | None = None) -> Flask:
             if payload.get("status") == "error":
                 payload["diagnosis"] = diagnose_error(str(payload.get("error") or ""))
             return json_response(payload)
+        except Exception as exc:
+            return error_response(exc, status=404)
+
+    @application.post("/api/task/<task_id>/cancel")
+    def api_task_cancel(task_id: str):
+        try:
+            cancelled = TASKS.cancel(task_id)
+            return json_response({"ok": True, "cancel_requested": cancelled})
+        except Exception as exc:
+            return error_response(exc, status=404 if isinstance(exc, KeyError) else 400)
+
+    @application.post("/api/task/<task_id>/retry")
+    def api_task_retry(task_id: str):
+        try:
+            previous = TASKS.get(task_id)
+            request_payload = previous.get("request") or {}
+            if not previous.get("restartable") or not request_payload:
+                raise ValueError("该任务没有可重试的请求配置。")
+            if previous.get("status") in {"queued", "running", "cancelling"}:
+                raise ValueError("任务仍在运行，不能重复启动。")
+            new_task_id = start_prepared_task(dict(request_payload))
+            return json_response(
+                {"ok": True, "task_id": new_task_id, "retried_from": task_id}
+            )
+        except Exception as exc:
+            return error_response(exc, status=404 if isinstance(exc, KeyError) else 400)
+
+    @application.get("/api/session/<session_id>/tasks")
+    def api_session_tasks(session_id: str):
+        try:
+            SESSIONS.get(session_id)
+            return json_response(
+                {"ok": True, "tasks": TASKS.list_recent(session_id=session_id)}
+            )
         except Exception as exc:
             return error_response(exc, status=404)
 
@@ -450,6 +555,21 @@ def create_app(template_store: MergeColumnTemplateStore | None = None) -> Flask:
         except Exception as exc:
             return error_response(exc)
 
+    @application.post("/api/session/<session_id>/tti-preview")
+    def api_tti_preview(session_id: str):
+        try:
+            session = SESSIONS.get(session_id)
+            data = request_data()
+            result = tti_preview(
+                session,
+                side=str(data.get("side") or "A"),
+                tti_value=data.get("tti"),
+                visible_columns=data.get("visible_columns") or None,
+            )
+            return json_response({"ok": True, **result})
+        except Exception as exc:
+            return error_response(exc)
+
     @application.post("/api/session/<session_id>/export")
     def api_export(session_id: str):
         try:
@@ -488,8 +608,21 @@ def create_app(template_store: MergeColumnTemplateStore | None = None) -> Flask:
                     **memory,
                     "session_bytes": directory_bytes(session.directory) if session else 0,
                     "sources": public_sources(session) if session else [],
+                    "shared_cache": SOURCE_CACHE.snapshot(),
                 }
             )
+        except Exception as exc:
+            return error_response(exc)
+
+    @application.post("/api/cache/shared/clear")
+    def api_shared_cache_clear():
+        try:
+            if any(
+                TASKS.has_active_for_session(str(snapshot.get("session_id") or ""))
+                for snapshot in SESSIONS.list_snapshots()
+            ):
+                raise ValueError("仍有读取任务运行，暂不能清理共享源缓存。")
+            return json_response({"ok": True, "cleared_items": SOURCE_CACHE.clear()})
         except Exception as exc:
             return error_response(exc)
 

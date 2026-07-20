@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import csv
 import math
+import re
 import threading
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Optional
@@ -16,12 +19,17 @@ from .config import (
     DEFAULT_714_COLUMNS,
     ID_LIKE_COLUMNS,
     MAX_READ_WORKERS,
+    MAX_CSV_REJECT_SAMPLES,
     MIN_AVAILABLE_MEMORY_BYTES,
     READ_CHUNK_ROWS,
     SOURCE_DUCKDB_MEMORY_LIMIT,
+    SHARED_SOURCE_CACHE_MAX_BYTES,
+    SHARED_SOURCE_CACHE_ROOT,
+    SHARED_SOURCE_CACHE_TTL_SECONDS,
     T396_REQUIRED_COLUMNS,
 )
 from .state import SessionState, TASKS
+from .source_cache import SharedSourceCache
 from .utils import (
     detect_csv_format,
     estimate_total_rows,
@@ -37,6 +45,119 @@ from .utils import (
 
 SCALE_714 = 1024000.0
 KEY_INTERNAL_COLUMNS = ["__key_crnti", "__key_time", "__key_frm", "__key_slot"]
+SOURCE_CACHE = SharedSourceCache(
+    SHARED_SOURCE_CACHE_ROOT,
+    max_bytes=SHARED_SOURCE_CACHE_MAX_BYTES,
+    ttl_seconds=SHARED_SOURCE_CACHE_TTL_SECONDS,
+)
+
+
+class CsvQualityTracker:
+    def __init__(self) -> None:
+        self._processed_warnings = 0
+        self.reject_samples: list[dict[str, Any]] = []
+        self.rejected_rows = 0
+
+    def consume(self, caught: list[warnings.WarningMessage]) -> None:
+        for warning in caught[self._processed_warnings :]:
+            if not isinstance(warning.message, pd.errors.ParserWarning):
+                continue
+            message = str(warning.message).strip()
+            lines = [int(value) for value in re.findall(r"Skipping line (\d+)", message)]
+            self.rejected_rows += len(lines) or 1
+            for line in lines or [None]:
+                if len(self.reject_samples) >= MAX_CSV_REJECT_SAMPLES:
+                    break
+                self.reject_samples.append({"line": line, "reason": message})
+        self._processed_warnings = len(caught)
+
+    def result(self, accepted_rows: int) -> dict[str, Any]:
+        rejected = int(self.rejected_rows)
+        accepted = int(accepted_rows)
+        return {
+            "status": "warning" if rejected else "clean",
+            "accepted_rows": accepted,
+            "rejected_rows": rejected,
+            "source_rows": accepted + rejected,
+            "reject_samples": self.reject_samples,
+            "encoding_replacements": 0,
+        }
+
+
+def enrich_reject_samples(
+    quality: dict[str, Any],
+    path: Path,
+    encoding: str,
+    separator: str,
+    columns: list[str],
+    key_mapping: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Attach bounded raw-line evidence to parser reject samples."""
+    samples = quality.get("reject_samples") or []
+    wanted = {
+        int(sample["line"])
+        for sample in samples
+        if sample.get("line") is not None
+    }
+    raw_by_line: dict[int, str] = {}
+    if wanted:
+        try:
+            with path.open("r", encoding=encoding, errors="strict", newline="") as handle:
+                for line_number, raw_line in enumerate(handle, start=1):
+                    if line_number in wanted:
+                        raw_by_line[line_number] = raw_line.rstrip("\r\n")[:4000]
+                    if len(raw_by_line) == len(wanted):
+                        break
+        except (OSError, UnicodeError) as exc:
+            quality["sample_read_error"] = str(exc)
+    column_index = {column: index for index, column in enumerate(columns)}
+    keys = dict(key_mapping or {})
+    for sample in samples:
+        line_number = sample.get("line")
+        raw_text = raw_by_line.get(int(line_number)) if line_number is not None else None
+        sample["raw_text"] = raw_text
+        sample["expected_fields"] = len(columns)
+        fields: list[str] = []
+        if raw_text is not None:
+            try:
+                fields = next(csv.reader([raw_text], delimiter=separator))
+            except (csv.Error, StopIteration):
+                fields = []
+        sample["actual_fields"] = len(fields) if fields else None
+        if not keys:
+            sample["connection_key_status"] = "not_applicable"
+            continue
+        key_values: dict[str, Optional[str]] = {}
+        for logical_name, column in keys.items():
+            index = column_index.get(column)
+            value = fields[index].strip() if index is not None and index < len(fields) else ""
+            key_values[logical_name] = value or None
+        sample["connection_key_values"] = key_values
+        sample["connection_key_status"] = (
+            "key_present_unverified"
+            if key_values and all(value is not None for value in key_values.values())
+            else "key_missing"
+        )
+    return quality
+
+
+def summarize_csv_quality(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    reports = {
+        key: result.get("quality") or {}
+        for key, result in results.items()
+        if result.get("quality")
+    }
+    accepted = sum(int(item.get("accepted_rows") or 0) for item in reports.values())
+    rejected = sum(int(item.get("rejected_rows") or 0) for item in reports.values())
+    warning_sources = [key for key, item in reports.items() if int(item.get("rejected_rows") or 0)]
+    return {
+        "status": "warning" if rejected else "clean",
+        "accepted_rows": accepted,
+        "rejected_rows": rejected,
+        "source_rows": accepted + rejected,
+        "warning_sources": warning_sources,
+        "gate_required": rejected > 0,
+    }
 
 
 def find_column(columns: list[str], candidates: list[str]) -> Optional[str]:
@@ -72,6 +193,7 @@ def add_internal_columns(
     trace_id: str,
     row_start: int,
 ) -> tuple[pd.DataFrame, dict[str, str]]:
+    frame = frame.copy()
     frame.columns = [str(column).strip() for column in frame.columns]
     frame.insert(0, "__source_row", np.arange(row_start, row_start + len(frame), dtype=np.int64))
     key_mapping: dict[str, str] = {}
@@ -111,6 +233,7 @@ class ProgressAggregator:
         status: str,
         detail: str,
     ) -> None:
+        TASKS.raise_if_cancelled(self.task_id)
         with self.lock:
             self.progress[source_key] = max(0.0, min(100.0, float(pct)))
             total_weight = sum(self.weights.values())
@@ -143,9 +266,9 @@ def _read_chunks(path: Path, encoding: str, separator: str):
         chunksize=READ_CHUNK_ROWS,
         dtype=str,
         keep_default_na=True,
-        on_bad_lines="skip",
+        on_bad_lines="warn",
         low_memory=False,
-        encoding_errors="replace",
+        encoding_errors="strict",
     )
 
 
@@ -165,90 +288,180 @@ def ingest_table_source(
 ) -> dict[str, Any]:
     path = Path(source["path"])
     trace_id = str(source["trace_id"])
-    encoding, separator = detect_csv_format(path)
-    estimated_rows = estimate_total_rows(path)
-    database_path = session.source_database_path(source_key)
-    _clear_duckdb_files(database_path)
-    session.update_source(
-        source_key,
-        **source,
-        status="reading",
-        rows=0,
-        estimated_rows=estimated_rows,
-        database_path=str(database_path),
-        encoding=encoding,
-        separator=separator,
-    )
-
-    connection = duckdb.connect(str(database_path))
-    temp_directory = session.directory / "tmp" / source_key
-    temp_directory.mkdir(parents=True, exist_ok=True)
-    connection.execute(
-        f"SET memory_limit = {quote_sql_text(SOURCE_DUCKDB_MEMORY_LIMIT)}"
-    )
-    connection.execute(f"SET temp_directory = {quote_sql_text(temp_directory)}")
-    connection.execute("SET threads = 2")
-    connection.execute("SET preserve_insertion_order = true")
-    rows = 0
-    columns: list[str] = []
-    numeric_seen: set[str] = set()
-    key_mapping: dict[str, str] = {}
-    try:
-        for chunk_index, raw_chunk in enumerate(_read_chunks(path, encoding, separator)):
-            if raw_chunk.empty and chunk_index == 0:
-                raise ValueError(f"CSV 为空：{path.name}")
-            chunk, current_mapping = add_internal_columns(raw_chunk, trace_id, rows + 1)
-            if chunk_index == 0:
-                columns = [str(column) for column in raw_chunk.columns]
-                key_mapping = current_mapping
-            numeric_seen.update(infer_numeric_columns(raw_chunk, ID_LIKE_COLUMNS))
-            rows += int(len(chunk))
-            connection.register("chunk_frame", chunk)
-            if chunk_index == 0:
-                connection.execute("CREATE TABLE data AS SELECT * FROM chunk_frame")
-            else:
-                connection.execute("INSERT INTO data BY NAME SELECT * FROM chunk_frame")
-            connection.unregister("chunk_frame")
-            pct = min(99.0, rows / max(estimated_rows, 1) * 100.0)
+    fingerprint = SOURCE_CACHE.fingerprint(path, trace_id)
+    with SOURCE_CACHE.locked(fingerprint):
+        cached = SOURCE_CACHE.lookup(fingerprint, trace_id)
+        if cached is not None:
+            result = {
+                **cached,
+                **source,
+                "status": "ready",
+                "database_path": cached.get("database_path"),
+                "fingerprint": fingerprint,
+                "cache_hit": True,
+                "cache_reason": "指纹一致，直接复用跨会话共享源库",
+            }
+            session.update_source(source_key, **result)
+            TASKS.update_file(
+                task_id,
+                source_key,
+                cache_hit=True,
+                fingerprint=fingerprint,
+                quality=result.get("quality") or {},
+            )
             progress.update(
                 source_key,
-                pct,
-                rows,
-                "reading",
-                f"{source_key} 已读取 {rows:,} 行（约 {pct:.1f}%）· {path.name}",
+                100,
+                int(result.get("rows") or 0),
+                "ready",
+                f"{source_key} 命中共享缓存：{int(result.get('rows') or 0):,} 行 · {path.name}",
             )
-        connection.execute("CHECKPOINT")
-    finally:
-        connection.close()
+            return result
 
-    database_bytes = sum(
-        item.stat().st_size
-        for item in database_path.parent.glob(database_path.name + "*")
-        if item.is_file()
-    )
-    numeric_columns = [column for column in columns if column in numeric_seen]
-    result = {
-        **source,
-        "status": "ready",
-        "rows": rows,
-        "estimated_rows": estimated_rows,
-        "database_path": str(database_path),
-        "database_bytes": database_bytes,
-        "encoding": encoding,
-        "separator": separator,
-        "columns": columns,
-        "numeric_columns": numeric_columns,
-        "key_mapping": key_mapping,
-    }
-    session.update_source(source_key, **result)
-    progress.update(
-        source_key,
-        100,
-        rows,
-        "ready",
-        f"{source_key} 读取完成：{rows:,} 行 · {path.name}",
-    )
-    return result
+        cache_reason = SOURCE_CACHE.miss_reason(path, fingerprint, trace_id)
+        encoding, separator = detect_csv_format(path)
+        estimated_rows = estimate_total_rows(path)
+        database_path = SOURCE_CACHE.staging_database_path(fingerprint)
+        _clear_duckdb_files(database_path)
+        session.update_source(
+            source_key,
+            **source,
+            status="reading",
+            rows=0,
+            estimated_rows=estimated_rows,
+            database_path=str(database_path),
+            encoding=encoding,
+            separator=separator,
+            fingerprint=fingerprint,
+            cache_hit=False,
+            cache_reason=cache_reason,
+        )
+
+        connection = duckdb.connect(str(database_path))
+        temp_directory = session.directory / "tmp" / source_key
+        temp_directory.mkdir(parents=True, exist_ok=True)
+        connection.execute(
+            f"SET memory_limit = {quote_sql_text(SOURCE_DUCKDB_MEMORY_LIMIT)}"
+        )
+        connection.execute(f"SET temp_directory = {quote_sql_text(temp_directory)}")
+        connection.execute("SET threads = 2")
+        connection.execute("SET preserve_insertion_order = true")
+        rows = 0
+        columns: list[str] = []
+        numeric_seen: set[str] = set()
+        key_mapping: dict[str, str] = {}
+        quality_tracker = CsvQualityTracker()
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", pd.errors.ParserWarning)
+                for chunk_index, raw_chunk in enumerate(
+                    _read_chunks(path, encoding, separator)
+                ):
+                    quality_tracker.consume(caught)
+                    if raw_chunk.empty and chunk_index == 0:
+                        raise ValueError(f"CSV 为空：{path.name}")
+                    chunk, current_mapping = add_internal_columns(
+                        raw_chunk, trace_id, rows + 1
+                    )
+                    if chunk_index == 0:
+                        columns = [str(column) for column in raw_chunk.columns]
+                        key_mapping = current_mapping
+                    numeric_seen.update(
+                        infer_numeric_columns(raw_chunk, ID_LIKE_COLUMNS)
+                    )
+                    rows += int(len(chunk))
+                    connection.register("chunk_frame", chunk)
+                    if chunk_index == 0:
+                        connection.execute(
+                            "CREATE TABLE data AS SELECT * FROM chunk_frame"
+                        )
+                    else:
+                        connection.execute(
+                            "INSERT INTO data BY NAME SELECT * FROM chunk_frame"
+                        )
+                    connection.unregister("chunk_frame")
+                    pct = min(99.0, rows / max(estimated_rows, 1) * 100.0)
+                    progress.update(
+                        source_key,
+                        pct,
+                        rows,
+                        "reading",
+                        f"{source_key} 已读取 {rows:,} 行（约 {pct:.1f}%）· {path.name}",
+                    )
+                quality_tracker.consume(caught)
+            if not columns:
+                raise ValueError(f"CSV 为空：{path.name}")
+            connection.execute("CHECKPOINT")
+        except Exception:
+            connection.close()
+            _clear_duckdb_files(database_path)
+            raise
+        else:
+            connection.close()
+
+        quality = enrich_reject_samples(
+            quality_tracker.result(rows),
+            path,
+            encoding,
+            separator,
+            columns,
+            key_mapping,
+        )
+        database_bytes = sum(
+            item.stat().st_size
+            for item in database_path.parent.glob(database_path.name + "*")
+            if item.is_file()
+        )
+        numeric_columns = [column for column in columns if column in numeric_seen]
+        metadata = {
+            **source,
+            "status": "ready",
+            "rows": rows,
+            "estimated_rows": estimated_rows,
+            "database_bytes": database_bytes,
+            "encoding": encoding,
+            "separator": separator,
+            "columns": columns,
+            "numeric_columns": numeric_columns,
+            "key_mapping": key_mapping,
+            "quality": quality,
+        }
+        published = SOURCE_CACHE.publish_table(
+            fingerprint,
+            trace_id,
+            database_path,
+            metadata,
+        )
+        result = {
+            **published,
+            **source,
+            "database_path": published["database_path"],
+            "status": "ready",
+            "fingerprint": fingerprint,
+            "cache_hit": False,
+            "cache_reason": cache_reason,
+        }
+        session.update_source(source_key, **result)
+        TASKS.update_file(
+            task_id,
+            source_key,
+            cache_hit=False,
+            fingerprint=fingerprint,
+            quality=quality,
+        )
+        suffix = (
+            f"，跳过坏行 {quality['rejected_rows']} 条"
+            if quality["rejected_rows"]
+            else "，质量检查通过"
+        )
+        progress.update(
+            source_key,
+            100,
+            rows,
+            "ready",
+            f"{source_key} 读取完成：{rows:,} 行{suffix} · {path.name}",
+        )
+        return result
 
 
 def ingest_t396_source(
@@ -259,94 +472,187 @@ def ingest_t396_source(
     progress: ProgressAggregator,
 ) -> dict[str, Any]:
     path = Path(source["path"])
-    encoding, separator = detect_csv_format(path)
-    estimated_rows = estimate_total_rows(path)
-    session.update_source(
-        source_key,
-        **source,
-        status="reading",
-        rows=0,
-        estimated_rows=estimated_rows,
-        encoding=encoding,
-        separator=separator,
-        storage="aggregate-only",
-    )
-    totals: dict[str, dict[str, float]] = {}
-    rows = 0
-    columns: list[str] = []
-    for chunk_index, chunk in enumerate(_read_chunks(path, encoding, separator)):
-        chunk.columns = [str(column).strip() for column in chunk.columns]
-        if chunk_index == 0:
-            columns = list(map(str, chunk.columns))
-            missing = [column for column in T396_REQUIRED_COLUMNS if column not in chunk.columns]
-            if missing:
-                raise ValueError(f"T396 缺少字段：{', '.join(missing)}")
-        rows += int(len(chunk))
-        work = chunk[T396_REQUIRED_COLUMNS].copy()
-        work["user_id"] = normalize_series(work["dlAmbr"])
-        work["vol"] = pd.to_numeric(work["dlThpVolRmvLastSlot"], errors="coerce")
-        work["time"] = pd.to_numeric(work["dlThpTimeRmvLastSlot"], errors="coerce")
-        work = work[work["user_id"].notna()]
-        grouped = work.groupby("user_id", dropna=False).agg(
-            sum_vol=("vol", "sum"),
-            sum_time=("time", "sum"),
-            rows=("user_id", "size"),
+    trace_id = "396"
+    fingerprint = SOURCE_CACHE.fingerprint(path, trace_id)
+    with SOURCE_CACHE.locked(fingerprint):
+        cached = SOURCE_CACHE.lookup(fingerprint, trace_id)
+        if cached is not None:
+            result = {
+                **cached,
+                **source,
+                "status": "ready",
+                "storage": "aggregate-only",
+                "fingerprint": fingerprint,
+                "cache_hit": True,
+                "cache_reason": "指纹一致，直接复用跨会话 T396 聚合缓存",
+            }
+            session.update_source(source_key, **result)
+            TASKS.update_file(
+                task_id,
+                source_key,
+                cache_hit=True,
+                fingerprint=fingerprint,
+                quality=result.get("quality") or {},
+            )
+            progress.update(
+                source_key,
+                100,
+                int(result.get("rows") or 0),
+                "ready",
+                f"{source_key} 命中共享聚合缓存：{int(result.get('rows') or 0):,} 行 · {path.name}",
+            )
+            return result
+
+        cache_reason = SOURCE_CACHE.miss_reason(path, fingerprint, trace_id)
+        encoding, separator = detect_csv_format(path)
+        estimated_rows = estimate_total_rows(path)
+        session.update_source(
+            source_key,
+            **source,
+            status="reading",
+            rows=0,
+            estimated_rows=estimated_rows,
+            encoding=encoding,
+            separator=separator,
+            storage="aggregate-only",
+            fingerprint=fingerprint,
+            cache_hit=False,
+            cache_reason=cache_reason,
         )
-        for user_id, values in grouped.iterrows():
-            current = totals.setdefault(
-                str(user_id), {"sum_vol": 0.0, "sum_time": 0.0, "rows": 0.0}
+        totals: dict[str, dict[str, float]] = {}
+        rows = 0
+        columns: list[str] = []
+        quality_tracker = CsvQualityTracker()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", pd.errors.ParserWarning)
+            for chunk_index, chunk in enumerate(
+                _read_chunks(path, encoding, separator)
+            ):
+                quality_tracker.consume(caught)
+                chunk.columns = [str(column).strip() for column in chunk.columns]
+                if chunk_index == 0:
+                    columns = list(map(str, chunk.columns))
+                    missing = [
+                        column
+                        for column in T396_REQUIRED_COLUMNS
+                        if column not in chunk.columns
+                    ]
+                    if missing:
+                        raise ValueError(f"T396 缺少字段：{', '.join(missing)}")
+                rows += int(len(chunk))
+                work = chunk[T396_REQUIRED_COLUMNS].copy()
+                work["user_id"] = normalize_series(work["dlAmbr"])
+                work["vol"] = pd.to_numeric(
+                    work["dlThpVolRmvLastSlot"], errors="coerce"
+                )
+                work["time"] = pd.to_numeric(
+                    work["dlThpTimeRmvLastSlot"], errors="coerce"
+                )
+                work = work[work["user_id"].notna()]
+                grouped = work.groupby("user_id", dropna=False).agg(
+                    sum_vol=("vol", "sum"),
+                    sum_time=("time", "sum"),
+                    rows=("user_id", "size"),
+                )
+                for user_id, values in grouped.iterrows():
+                    current = totals.setdefault(
+                        str(user_id),
+                        {"sum_vol": 0.0, "sum_time": 0.0, "rows": 0.0},
+                    )
+                    current["sum_vol"] += (
+                        float(values["sum_vol"])
+                        if pd.notna(values["sum_vol"])
+                        else 0.0
+                    )
+                    current["sum_time"] += (
+                        float(values["sum_time"])
+                        if pd.notna(values["sum_time"])
+                        else 0.0
+                    )
+                    current["rows"] += (
+                        float(values["rows"])
+                        if pd.notna(values["rows"])
+                        else 0.0
+                    )
+                pct = min(99.0, rows / max(estimated_rows, 1) * 100.0)
+                progress.update(
+                    source_key,
+                    pct,
+                    rows,
+                    "reading",
+                    f"{source_key} 已聚合 {rows:,} 行（约 {pct:.1f}%）· {path.name}",
+                )
+            quality_tracker.consume(caught)
+        if not columns:
+            raise ValueError(f"CSV 为空：{path.name}")
+
+        aggregate_rows = []
+        for user_id, values in totals.items():
+            sum_time = float(values["sum_time"])
+            rate = float(values["sum_vol"]) / sum_time if sum_time > 0 else None
+            aggregate_rows.append(
+                {
+                    "user_id": user_id,
+                    "sum_vol": float(values["sum_vol"]),
+                    "sum_time": sum_time,
+                    "rows": int(values["rows"]),
+                    "rate": rate,
+                }
             )
-            current["sum_vol"] += (
-                float(values["sum_vol"]) if pd.notna(values["sum_vol"]) else 0.0
-            )
-            current["sum_time"] += (
-                float(values["sum_time"]) if pd.notna(values["sum_time"]) else 0.0
-            )
-            current["rows"] += (
-                float(values["rows"]) if pd.notna(values["rows"]) else 0.0
-            )
-        pct = min(99.0, rows / max(estimated_rows, 1) * 100.0)
+        aggregate_rows.sort(key=lambda row: (-row["sum_time"], row["user_id"]))
+        quality = enrich_reject_samples(
+            quality_tracker.result(rows),
+            path,
+            encoding,
+            separator,
+            columns,
+        )
+        metadata = {
+            **source,
+            "status": "ready",
+            "rows": rows,
+            "estimated_rows": estimated_rows,
+            "columns": columns,
+            "numeric_columns": [],
+            "storage": "aggregate-only",
+            "aggregate_rows": aggregate_rows,
+            "encoding": encoding,
+            "separator": separator,
+            "quality": quality,
+        }
+        published = SOURCE_CACHE.publish_aggregate(
+            fingerprint, trace_id, metadata
+        )
+        result = {
+            **published,
+            **source,
+            "status": "ready",
+            "storage": "aggregate-only",
+            "fingerprint": fingerprint,
+            "cache_hit": False,
+            "cache_reason": cache_reason,
+        }
+        session.update_source(source_key, **result)
+        TASKS.update_file(
+            task_id,
+            source_key,
+            cache_hit=False,
+            fingerprint=fingerprint,
+            quality=quality,
+        )
+        suffix = (
+            f" · 跳过坏行 {quality['rejected_rows']} 条"
+            if quality["rejected_rows"]
+            else " · 质量检查通过"
+        )
         progress.update(
             source_key,
-            pct,
+            100,
             rows,
-            "reading",
-            f"{source_key} 已聚合 {rows:,} 行（约 {pct:.1f}%）· {path.name}",
+            "ready",
+            f"{source_key} 聚合完成：{rows:,} 行 · {len(aggregate_rows)} 个用户{suffix}",
         )
-
-    aggregate_rows = []
-    for user_id, values in totals.items():
-        sum_time = float(values["sum_time"])
-        rate = float(values["sum_vol"]) / sum_time if sum_time > 0 else None
-        aggregate_rows.append(
-            {
-                "user_id": user_id,
-                "sum_vol": float(values["sum_vol"]),
-                "sum_time": sum_time,
-                "rows": int(values["rows"]),
-                "rate": rate,
-            }
-        )
-    aggregate_rows.sort(key=lambda row: (-row["sum_time"], row["user_id"]))
-    result = {
-        **source,
-        "status": "ready",
-        "rows": rows,
-        "estimated_rows": estimated_rows,
-        "columns": columns,
-        "numeric_columns": [],
-        "storage": "aggregate-only",
-        "aggregate_rows": aggregate_rows,
-    }
-    session.update_source(source_key, **result)
-    progress.update(
-        source_key,
-        100,
-        rows,
-        "ready",
-        f"{source_key} 聚合完成：{rows:,} 行 · {len(aggregate_rows)} 个用户",
-    )
-    return result
+        return result
 
 
 def build_t396_comparison(
@@ -388,6 +694,8 @@ def build_t396_comparison(
                 "diff_pct": diff_pct,
                 "sum_time_a": user_a.get("sum_time"),
                 "sum_time_b": user_b.get("sum_time"),
+                "rows_a": user_a.get("rows"),
+                "rows_b": user_b.get("rows"),
                 "time_share_a": time_share(user_a, total_time_a),
                 "time_share_b": time_share(user_b, total_time_b),
             }
@@ -424,6 +732,111 @@ def build_t396_comparison(
         "total_time_a": total_time_a,
         "total_time_b": total_time_b,
         "rows": rows,
+    }
+
+
+def build_kpi_regression_radar(groups: list[dict[str, Any]]) -> dict[str, Any]:
+    ranked: list[dict[str, Any]] = []
+    for group in groups:
+        comparison = group.get("comparison") or {}
+        diff = comparison.get("diff_pct")
+        diff_value = float(diff) if diff is not None else None
+        total_a = float(comparison.get("total_time_a") or 0)
+        total_b = float(comparison.get("total_time_b") or 0)
+        balance = (
+            min(total_a, total_b) / max(total_a, total_b)
+            if max(total_a, total_b) > 0
+            else 0.0
+        )
+        rows = comparison.get("rows") or []
+        comparable = [
+            row
+            for row in rows
+            if row.get("rate_a") is not None and row.get("rate_b") is not None
+        ]
+        overlap = len(comparable) / max(len(rows), 1)
+        evidence_score = balance * 0.6 + overlap * 0.4
+        evidence_grade = "高" if evidence_score >= 0.85 else "中" if evidence_score >= 0.6 else "低"
+        impacted_users: list[dict[str, Any]] = []
+        for row in comparable:
+            user_diff = row.get("diff_pct")
+            if user_diff is None or float(user_diff) >= 0:
+                continue
+            share = max(
+                float(row.get("time_share_a") or 0),
+                float(row.get("time_share_b") or 0),
+            )
+            impact = abs(float(user_diff)) * share / 100.0
+            impacted_users.append(
+                {
+                    "user_id": str(row.get("user_id") or ""),
+                    "diff_pct": float(user_diff),
+                    "max_time_share": share,
+                    "impact_score": impact,
+                }
+            )
+        impacted_users.sort(
+            key=lambda item: (-float(item["impact_score"]), item["user_id"])
+        )
+        top_impact = float(impacted_users[0]["impact_score"]) if impacted_users else 0.0
+        decline = max(0.0, -(diff_value or 0.0))
+        priority_score = min(
+            100.0,
+            min(decline / 20.0, 1.0) * 70.0
+            + min(top_impact / 15.0, 1.0) * 20.0
+            + evidence_score * 10.0,
+        )
+        if diff_value is None:
+            risk_level = "insufficient"
+        elif diff_value <= -10 or priority_score >= 70:
+            risk_level = "critical"
+        elif diff_value <= -5 or priority_score >= 40:
+            risk_level = "warning"
+        elif diff_value < 0:
+            risk_level = "watch"
+        elif diff_value > 0:
+            risk_level = "improved"
+        else:
+            risk_level = "flat"
+        ranked.append(
+            {
+                "id": group.get("id"),
+                "label": group.get("label"),
+                "A": group.get("A"),
+                "B": group.get("B"),
+                "cell_rate_a": comparison.get("cell_rate_a"),
+                "cell_rate_b": comparison.get("cell_rate_b"),
+                "diff_pct": diff_value,
+                "priority_score": round(priority_score, 2),
+                "risk_level": risk_level,
+                "evidence_grade": evidence_grade,
+                "coverage_balance": round(balance * 100.0, 2),
+                "user_overlap": round(overlap * 100.0, 2),
+                "top_regression_users": impacted_users[:5],
+            }
+        )
+    risk_order = {
+        "critical": 0,
+        "warning": 1,
+        "watch": 2,
+        "insufficient": 3,
+        "flat": 4,
+        "improved": 5,
+    }
+    ranked.sort(
+        key=lambda item: (
+            risk_order.get(str(item["risk_level"]), 9),
+            -float(item["priority_score"]),
+            str(item.get("label") or ""),
+        )
+    )
+    return {
+        "ranked_groups": ranked,
+        "critical_count": sum(1 for item in ranked if item["risk_level"] == "critical"),
+        "warning_count": sum(1 for item in ranked if item["risk_level"] == "warning"),
+        "watch_count": sum(1 for item in ranked if item["risk_level"] == "watch"),
+        "improved_count": sum(1 for item in ranked if item["risk_level"] == "improved"),
+        "note": "证据等级仅反映 A/B 时长平衡和用户重合度，不代表统计显著性。",
     }
 
 
@@ -513,6 +926,7 @@ def run_ingest_task(
     results.update(_ingest_source_group(session, task_id, table_sources, progress))
 
     TASKS.update(task_id, pct=91, title="整理字段清单", detail="读取完成，正在整理 T537/T714 字段清单。")
+    csv_quality = summarize_csv_quality(results)
     schemas: dict[str, Any] = {}
     for trace_id in ("537", "714"):
         side_sources = [
@@ -543,6 +957,7 @@ def run_ingest_task(
         selection=session.manifest.get("selection", {}),
         schemas=schemas,
         t396=comparison,
+        csv_quality=csv_quality,
     )
     return {
         "session_id": session.session_id,
@@ -550,6 +965,7 @@ def run_ingest_task(
         "sources": {key: _public_source(result) for key, result in results.items()},
         "schemas": schemas,
         "t396": comparison,
+        "csv_quality": csv_quality,
     }
 
 
@@ -608,12 +1024,16 @@ def run_kpi396_task(
         "flat": sum(1 for value in diffs if value == 0),
         "average_diff_pct": sum(diffs) / len(diffs) if diffs else None,
     }
+    radar = build_kpi_regression_radar(output_groups)
+    csv_quality = summarize_csv_quality(results)
     payload = {
         "session_id": session.session_id,
         "phase": "kpi396",
         "sources": {key: _public_source(result) for key, result in results.items()},
         "groups": output_groups,
         "summary": summary,
+        "radar": radar,
+        "csv_quality": csv_quality,
     }
     session.update(phase="kpi396", kpi396=payload)
     TASKS.update(
@@ -668,10 +1088,16 @@ def merge_side(
     selected_537: list[str],
     selected_714: list[str],
     row_limit: int,
+    build_suffix: str = "",
 ) -> Optional[dict[str, Any]]:
     source_537 = session.manifest.get("sources", {}).get(f"{side}537")
     source_714 = session.manifest.get("sources", {}).get(f"{side}714")
-    table_name = f"merged_{side.lower()}"
+    final_table_name = f"merged_{side.lower()}"
+    table_name = (
+        f"{final_table_name}__build_{build_suffix}"
+        if build_suffix
+        else final_table_name
+    )
     connection.execute(f"DROP TABLE IF EXISTS {quote_ident(table_name)}")
     if not source_537 or source_537.get("status") != "ready":
         return None
@@ -828,6 +1254,7 @@ def merge_side(
     return {
         "side": side,
         "table": table_name,
+        "final_table": final_table_name,
         "anchor_rows": int(anchor_rows),
         "matched_rows": int(matched_rows),
         "nan_rows": int(anchor_rows - matched_rows),
@@ -835,6 +1262,49 @@ def merge_side(
         "duplicate_714_keys": duplicate_keys,
         "has_714": bool(alias_714),
     }
+
+
+def _cleanup_merge_build_tables(
+    connection: duckdb.DuckDBPyConnection, build_suffix: str = ""
+) -> None:
+    suffix = f"__build_{build_suffix}" if build_suffix else "__build_"
+    for (table_name,) in connection.execute("SHOW TABLES").fetchall():
+        name = str(table_name)
+        if name.startswith(("merged_a__build_", "merged_b__build_")) and (
+            not build_suffix or name.endswith(suffix)
+        ):
+            connection.execute(f"DROP TABLE IF EXISTS {quote_ident(name)}")
+
+
+def _publish_merge_tables(
+    connection: duckdb.DuckDBPyConnection,
+    stats_by_side: dict[str, Optional[dict[str, Any]]],
+    build_suffix: str,
+) -> None:
+    """Atomically replace ready merge tables after both sides finish."""
+    existing = {str(row[0]) for row in connection.execute("SHOW TABLES").fetchall()}
+    connection.execute("BEGIN TRANSACTION")
+    try:
+        for side in ("A", "B"):
+            final_name = f"merged_{side.lower()}"
+            backup_name = f"{final_name}__previous_{build_suffix}"
+            stats = stats_by_side.get(side)
+            connection.execute(f"DROP TABLE IF EXISTS {quote_ident(backup_name)}")
+            if final_name in existing:
+                connection.execute(
+                    f"ALTER TABLE {quote_ident(final_name)} RENAME TO {quote_ident(backup_name)}"
+                )
+            if stats is not None:
+                build_name = str(stats["table"])
+                connection.execute(
+                    f"ALTER TABLE {quote_ident(build_name)} RENAME TO {quote_ident(final_name)}"
+                )
+                stats["table"] = final_name
+            connection.execute(f"DROP TABLE IF EXISTS {quote_ident(backup_name)}")
+        connection.execute("COMMIT")
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
 
 
 def run_merge_task(
@@ -857,6 +1327,7 @@ def _run_merge_task_locked(
     selected_714: list[str],
     row_limit: int,
 ) -> dict[str, Any]:
+    TASKS.raise_if_cancelled(task_id)
     TASKS.update(task_id, pct=5, title="准备汇总", detail="正在检查连接字段与选择列。")
     session.database_path.parent.mkdir(parents=True, exist_ok=True)
     connection = duckdb.connect(str(session.database_path))
@@ -867,15 +1338,32 @@ def _run_merge_task_locked(
     )
     connection.execute(f"SET temp_directory = {quote_sql_text(temp_directory)}")
     connection.execute("SET threads = 2")
+    build_suffix = task_id[:12]
     try:
+        _cleanup_merge_build_tables(connection)
+        TASKS.raise_if_cancelled(task_id)
         TASKS.update(task_id, pct=18, detail="正在生成方案 A 汇总表。")
         stats_a = merge_side(
-            connection, session, "A", selected_537, selected_714, int(row_limit or 0)
+            connection,
+            session,
+            "A",
+            selected_537,
+            selected_714,
+            int(row_limit or 0),
+            build_suffix,
         )
+        TASKS.raise_if_cancelled(task_id)
         TASKS.update(task_id, pct=57, detail="正在生成方案 B 汇总表。")
         stats_b = merge_side(
-            connection, session, "B", selected_537, selected_714, int(row_limit or 0)
+            connection,
+            session,
+            "B",
+            selected_537,
+            selected_714,
+            int(row_limit or 0),
+            build_suffix,
         )
+        TASKS.raise_if_cancelled(task_id)
         if stats_a is None and stats_b is None:
             raise ValueError("方案 A/B 均缺少 T537，无法建立汇总数据集。")
         TASKS.update(task_id, pct=88, detail="正在整理字段类型与可绘图指标。")
@@ -883,6 +1371,7 @@ def _run_merge_task_locked(
         common_columns: Optional[set[str]] = None
         common_numeric: Optional[set[str]] = None
         for side, stats in (("A", stats_a), ("B", stats_b)):
+            TASKS.raise_if_cancelled(task_id)
             if stats is None:
                 continue
             info = connection.execute(
@@ -924,6 +1413,7 @@ def _run_merge_task_locked(
         ]
         merge_manifest = {
             "row_limit": int(row_limit or 0),
+            "merge_mode": "limited" if int(row_limit or 0) > 0 else "full",
             "selected_537": selected_537,
             "selected_714": selected_714,
             "sides": sides,
@@ -933,6 +1423,16 @@ def _run_merge_task_locked(
             "default_sort_column": "tti" if "tti" in ordered_common else None,
             "default_sort_ascending": True,
         }
+        TASKS.raise_if_cancelled(task_id)
+        _publish_merge_tables(
+            connection,
+            {"A": stats_a, "B": stats_b},
+            build_suffix,
+        )
+        for side, stats in (("A", stats_a), ("B", stats_b)):
+            if stats is not None and side in sides:
+                sides[side]["table"] = stats["table"]
+                sides[side].pop("final_table", None)
         session.update(phase="merged", merge=merge_manifest)
         return {
             "session_id": session.session_id,
@@ -940,5 +1440,8 @@ def _run_merge_task_locked(
             **merge_manifest,
             "t396": session.manifest.get("t396", {}),
         }
+    except Exception:
+        _cleanup_merge_build_tables(connection, build_suffix)
+        raise
     finally:
         connection.close()

@@ -19,11 +19,18 @@ const state = {
   mergeTemplates: [],
   selectedMergeTemplateId: "",
   mergeTemplateStoragePath: "",
+  analysisRecipes: [],
+  selectedRecipeId: "",
+  recipeStoragePath: "",
+  pendingRecipe: null,
+  pendingRadarDrill: null,
+  csvQualityAcknowledged: false,
   availableUsers: [],
   selectedUsers: new Set(),
   userPickerDraft: new Set(),
   columnFilters: {},
   visibleColumns: new Set(),
+  pinnedColumns: [],
   activeUser: "__ALL__",
   activeSide: "A",
   tablePage: 1,
@@ -38,8 +45,11 @@ const state = {
   sourceCollapsed: false,
   generation: 0,
   taskTokens: { ingest: 0, kpi: 0, merge: 0, plot: 0 },
+  activeTasks: { read: "", merge: "", plot: "" },
+  lastTasks: { read: "", merge: "", plot: "" },
   plotRenderToken: 0,
   columnMenu: { column: "", profile: null, selectedValues: new Set(), token: 0, search: "" },
+  ttiPreviewToken: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -132,6 +142,108 @@ function setProgress(prefix, task) {
   $(`${prefix}ProgressBar`).style.width = `${pct}%`;
   $(`${prefix}ProgressTitle`).textContent = task.title || "处理中";
   $(`${prefix}ProgressDetail`).textContent = task.detail || "";
+}
+
+function taskUiKind(taskKind) {
+  return taskKind === "ingest" || taskKind === "kpi" || taskKind === "kpi396" ? "read" : taskKind;
+}
+
+function persistActiveTasks() {
+  const payload = { session_id: state.sessionId, tasks: state.activeTasks };
+  window.localStorage.setItem("traceActiveTasks", JSON.stringify(payload));
+}
+
+function setTaskControls(taskKind, status, taskId = "") {
+  const kind = taskUiKind(taskKind);
+  const title = kind[0].toUpperCase() + kind.slice(1);
+  const cancel = $(`cancel${title}TaskBtn`);
+  const retry = $(`retry${title}TaskBtn`);
+  if (!cancel || !retry) return;
+  const active = ["queued", "running", "cancelling"].includes(status);
+  cancel.classList.toggle("hidden", !active);
+  cancel.disabled = status === "cancelling";
+  retry.classList.toggle("hidden", !["error", "cancelled", "interrupted"].includes(status));
+  if (taskId) {
+    if (active) state.activeTasks[kind] = taskId;
+    state.lastTasks[kind] = taskId;
+  }
+  if (!active && state.activeTasks[kind] === taskId) state.activeTasks[kind] = "";
+  persistActiveTasks();
+}
+
+async function cancelActiveTask(kind) {
+  const taskId = state.activeTasks[kind];
+  if (!taskId) return;
+  try {
+    await api(`/api/task/${taskId}/cancel`, {});
+    setTaskControls(kind, "cancelling", taskId);
+    toast("已请求取消，当前分块结束后停止。");
+  } catch (error) {
+    showError(error, "取消任务失败");
+  }
+}
+
+async function applyRecoveredTaskResult(action, result, taskId) {
+  if (action === "ingest") {
+    state.ingest = result;
+    state.schemas = result.schemas || {};
+    state.t396 = result.t396 || {};
+    state.t396ReadyTaskId = taskId;
+    state.csvQualityAcknowledged = false;
+    renderColumnConfig();
+    renderT396();
+    renderReadInsights();
+    renderMergeInsights();
+    setBadge("readStateBadge", result.csv_quality?.gate_required ? "质量待确认" : "读取完成", result.csv_quality?.gate_required ? "warning" : "ready");
+    setStepEnabled(2, !result.csv_quality?.gate_required);
+    if (!result.csv_quality?.gate_required) goStep(2);
+  } else if (action === "kpi396") {
+    state.ingest = result;
+    state.kpiResult = result;
+    renderKpiResults();
+    setBadge("readStateBadge", "KPI 完成", "ready");
+  } else if (action === "merge") {
+    state.merge = result;
+    state.sortColumn = result.default_sort_column || "";
+    state.sortAscending = result.default_sort_ascending !== false;
+    state.visibleColumns = new Set(defaultVisibleColumns());
+    state.pinnedColumns = [];
+    state.lastMetrics = (result.default_metrics || []).slice(0, 4);
+    renderMergeInsights();
+    renderMergeStats();
+    await loadAnalysisUsers();
+    renderMetricOptions();
+    renderUserTabs();
+    setStepEnabled(3, true);
+    goStep(3);
+    await queryTable(1);
+  } else if (action === "plot") {
+    state.figures = result.figures || {};
+    state.activeFigure = Object.keys(state.figures)[0] || "";
+    renderFigureTabs();
+    renderMetricSummary(result.summary_rows || []);
+    showAnalysisTab("charts");
+    renderActiveFigure();
+  }
+  pollMemoryStatus();
+}
+
+async function retryLastTask(kind) {
+  const previousId = state.lastTasks[kind];
+  if (!previousId) { toast("没有可重试的任务。"); return; }
+  try {
+    const previous = await api(`/api/task/status/${previousId}`);
+    const started = await api(`/api/task/${previousId}/retry`, {});
+    const tokenKind = previous.action === "kpi396" ? "kpi" : previous.action;
+    const progress = tokenKind === "ingest" || tokenKind === "kpi"
+      ? renderReadTask
+      : (task) => setProgress(tokenKind, task);
+    const result = await pollTask(started.task_id, tokenKind, { progress });
+    await applyRecoveredTaskResult(previous.action, result, started.task_id);
+    toast("任务重试完成；已完成源文件优先命中共享缓存。 ");
+  } catch (error) {
+    showError(error, "任务重试失败");
+  }
 }
 
 function batchCategoryLabel(batch) {
@@ -484,12 +596,22 @@ function renderKpiResults() {
   const result = state.kpiResult;
   if (!result) { $("kpiResults").classList.add("hidden"); return; }
   const summary = result.summary || {};
+  const radar = result.radar || {};
   $("kpiStats").innerHTML = statItems([
     ["对比组", formatNumber(summary.group_count || 0, 0)],
     ["去重 T396", formatNumber(summary.source_count || 0, 0)],
     ["提升 / 下降", `${summary.improved || 0} / ${summary.declined || 0}`],
     ["平均差异", summary.average_diff_pct == null ? "-" : `${formatNumber(summary.average_diff_pct, 3)}%`],
+    ["严重回退", formatNumber(radar.critical_count || 0, 0)],
+    ["一般预警", formatNumber(radar.warning_count || 0, 0)],
   ]);
+  const riskLabels = { critical: "严重回退", warning: "一般预警", watch: "轻微回退", insufficient: "证据不足", flat: "持平", improved: "提升" };
+  $("kpiRadar").innerHTML = (radar.ranked_groups || []).map((item) => {
+    const topUser = item.top_regression_users?.[0];
+    const topText = topUser ? `主影响 ambr ${topUser.user_id} · 回退 ${formatNumber(topUser.diff_pct, 2)}% · TTI占比 ${formatNumber(topUser.max_time_share, 1)}%` : "无明确回退用户";
+    const evidenceTitle = `${radar.note || ""} A/B时长平衡 ${formatNumber(item.coverage_balance, 1)}%，用户重合 ${formatNumber(item.user_overlap, 1)}%。`;
+    return `<div class="radar-row ${escapeHtml(item.risk_level || "")}" title="${escapeHtml(evidenceTitle)}"><span class="radar-level">${escapeHtml(riskLabels[item.risk_level] || item.risk_level)}</span><span class="radar-label">${escapeHtml(item.label || "未命名对比组")}</span><span class="radar-metric"><span>B-A</span><b>${item.diff_pct == null ? "-" : `${formatNumber(item.diff_pct, 2)}%`}</b></span><span class="radar-metric"><span>优先分</span><b>${formatNumber(item.priority_score, 1)}</b></span><span class="radar-metric"><span>证据 / 时长平衡</span><b>${escapeHtml(item.evidence_grade || "-")} · ${formatNumber(item.coverage_balance, 0)}%</b></span><span class="radar-user">${escapeHtml(topText)}</span><button type="button" class="radar-drill-btn" data-radar-drill="${escapeHtml(item.id)}">详细分析</button></div>`;
+  }).join("");
   const groups = result.groups || [];
   $("kpiSummaryTable").innerHTML = `<table><thead><tr><th>对比组</th><th>方案 A 批次</th><th>方案 B 批次</th><th>A 小区 Rate</th><th>B 小区 Rate</th><th>B-A 差异</th><th>A/B 用户</th></tr></thead><tbody>${groups.map((group) => {
     const comparison = group.comparison || {};
@@ -507,6 +629,58 @@ function renderKpiResults() {
     }).join("")}</tbody></table></div></details>`;
   }).join("");
   $("kpiResults").classList.remove("hidden");
+}
+
+async function continueRadarDrill() {
+  const context = state.pendingRadarDrill;
+  if (!context || !state.ingest) return;
+  const merged = await startMerge();
+  if (!merged) { state.pendingRadarDrill = null; return; }
+  const users = (context.users || []).filter((user) => state.availableUsers.includes(String(user))).map(String);
+  state.selectedUsers = new Set(users);
+  state.userPickerDraft = new Set(users);
+  state.activeUser = users[0] || "__ALL__";
+  if (users.length) state.columnFilters.ambr = { column: "ambr", op: "in", value: users };
+  renderAnalysisUserPicker();
+  renderUserTabs();
+  renderFilterChips();
+  renderChartFilterContext();
+  state.lastMetrics = (state.merge.default_metrics || []).slice(0, 4);
+  renderMetricOptions();
+  showAnalysisTab("charts");
+  if (state.lastMetrics.length) await startPlot();
+  state.pendingRadarDrill = null;
+  toast(`已进入“${context.label}”详细分析${users.length ? `，并带入 ${users.length} 个回退用户` : ""}。`);
+}
+
+async function drillIntoKpiGroup(groupId, button) {
+  const radarItem = state.kpiResult?.radar?.ranked_groups?.find((item) => String(item.id) === String(groupId));
+  const group = state.kpiResult?.groups?.find((item) => String(item.id) === String(groupId));
+  if (!radarItem || !group) { toast("该 KPI 对比组已失效，请重新运行概览。"); return; }
+  for (const side of ["A", "B"]) {
+    const batchId = group[side]?.batch_id || "";
+    if (batchId && Array.from($(`scheme${side}`).options).some((option) => option.value === batchId)) {
+      $(`scheme${side}`).value = batchId;
+      updateBatchSelectTitle(side);
+    }
+  }
+  renderBatchSummary();
+  state.pendingRadarDrill = {
+    label: group.label || radarItem.label || "KPI 对比组",
+    users: (radarItem.top_regression_users || []).map((item) => String(item.user_id)).filter(Boolean),
+  };
+  setBusy(button, true, "进入中...");
+  try {
+    const ingested = await startAnalysis();
+    if (!ingested) { state.pendingRadarDrill = null; return; }
+    if (ingested.csv_quality?.gate_required && !state.csvQualityAcknowledged) {
+      toast("详细分析已读完数据；确认 CSV 质量门禁后将自动继续。 ");
+      return;
+    }
+    await continueRadarDrill();
+  } finally {
+    setBusy(button, false);
+  }
 }
 
 async function startKpiOverview() {
@@ -531,6 +705,7 @@ async function startKpiOverview() {
   setStepEnabled(3, false);
   state.ingest = null;
   state.kpiResult = null;
+  state.pendingRadarDrill = null;
   state.t396ReadyTaskId = "";
   try {
     const start = await api("/api/task/start", { action: "kpi396", session_id: state.sessionId, groups });
@@ -572,7 +747,9 @@ async function scanDirectory() {
     state.merge = null;
     state.t396 = null;
     state.t396ReadyTaskId = "";
+    state.csvQualityAcknowledged = false;
     state.kpiResult = null;
+    state.pendingRadarDrill = null;
     state.kpiGroups = [];
     state.batchFilters = {
       A: { caseKey: "", cellKey: "" },
@@ -584,6 +761,7 @@ async function scanDirectory() {
     state.activeUser = "__ALL__";
     state.columnFilters = {};
     state.visibleColumns = new Set();
+    state.pinnedColumns = [];
     state.sortColumn = "";
     state.sortAscending = true;
     state.lastMetrics = [];
@@ -591,6 +769,7 @@ async function scanDirectory() {
     state.metricSummaryRows = [];
     state.activeFigure = "";
     plotSizeCustomized = false;
+    window.localStorage.setItem("traceLastSessionId", state.sessionId);
     renderReadInsights();
     renderMergeInsights();
     renderAnalysisUserPicker();
@@ -609,9 +788,11 @@ async function scanDirectory() {
     $("scanMessage").textContent = `扫描完成：A ${sideA.case_count || 0} Case / ${sideA.cell_count || 0} 小区 / ${sideA.batch_count || 0} 批次；B ${sideB.case_count || 0} Case / ${sideB.cell_count || 0} 小区 / ${sideB.batch_count || 0} 批次。`;
     toast("扫描完成；可按 Case/小区筛选，或一键匹配同名小区。");
     pollMemoryStatus();
+    return data;
   } catch (error) {
     $("scanMessage").textContent = `扫描失败：${error.message}`;
     showError(error, "扫描失败");
+    return null;
   } finally {
     setBusy($("scanBtn"), false);
     $("swapSchemesBtn").disabled = false;
@@ -669,7 +850,9 @@ function renderReadTask(task) {
   }
   const rows = Object.entries(task.files || {}).sort(([left], [right]) => left.localeCompare(right)).map(([key, file]) => {
     const pct = Math.max(0, Math.min(100, Number(file.pct || 0)));
-    const status = file.status === "ready" ? "完成" : file.status === "error" ? "失败" : file.status === "reading" ? "读取中" : "排队";
+    const rejected = Number(file.quality?.rejected_rows || 0);
+    let status = file.status === "ready" ? (file.cache_hit ? "共享缓存" : "完成") : file.status === "error" ? "失败" : file.status === "reading" ? "读取中" : file.status === "cancelling" ? "取消中" : "排队";
+    if (rejected > 0) status += ` · 坏行 ${rejected}`;
     const side = file.side === "KPI" ? "KPI" : (file.side || key[0]);
     return `<tr><td title="${escapeHtml(file.path || file.name || "")}">${escapeHtml(file.name || key)}</td><td class="mono">${escapeHtml(side)} / T${escapeHtml(file.trace_id || key.slice(1))}</td><td><div class="mini-progress"><i style="width:${pct}%"></i></div></td><td class="mono">${formatNumber(file.rows || 0, 0)}</td><td>${status}</td></tr>`;
   }).join("");
@@ -679,14 +862,28 @@ function renderReadTask(task) {
 async function pollTask(taskId, taskKind, handlers = {}) {
   const token = ++state.taskTokens[taskKind];
   const started = Date.now();
+  setTaskControls(taskKind, "queued", taskId);
   while (token === state.taskTokens[taskKind]) {
     if (Date.now() - started > 2 * 60 * 60 * 1000) throw new Error("任务超过 2 小时，已停止前端等待。后端数据不会被删除。");
     const task = await api(`/api/task/status/${taskId}`);
     handlers.progress?.(task);
+    setTaskControls(taskKind, task.status, taskId);
     if (task.status === "done") return task.result || {};
     if (task.status === "error") {
       const error = new Error(task.error || task.detail || "后端任务失败");
       error.payload = { diagnosis: task.diagnosis, detail: task.traceback, error: task.error };
+      throw error;
+    }
+    if (task.status === "cancelled" || task.status === "interrupted") {
+      const error = new Error(task.detail || (task.status === "cancelled" ? "任务已取消" : "任务因服务重启中断"));
+      error.payload = {
+        diagnosis: {
+          reason: error.message,
+          actions: ["点击“重试失败任务”继续；已完成的共享源缓存会直接复用。"],
+        },
+        detail: task.traceback || task.detail,
+      };
+      error.taskStatus = task.status;
       throw error;
     }
     await new Promise((resolve) => window.setTimeout(resolve, 450));
@@ -714,8 +911,10 @@ async function startAnalysis() {
   state.schemas = {};
   state.t396 = null;
   state.t396ReadyTaskId = "";
+  state.csvQualityAcknowledged = false;
   state.kpiResult = null;
-  state.selectedColumns = { "537": new Set(), "714": new Set() };
+    state.selectedColumns = { "537": new Set(), "714": new Set() };
+    state.pinnedColumns = [];
   state.sortColumn = "";
   state.sortAscending = true;
   renderReadInsights();
@@ -735,14 +934,23 @@ async function startAnalysis() {
     renderT396();
     renderReadInsights();
     renderMergeInsights();
-    setStepEnabled(2, true);
-    goStep(2);
-    toast("读取完成，请确认汇总字段。");
+    if (result.csv_quality?.gate_required) {
+      setBadge("readStateBadge", "质量待确认", "warning");
+      setStepEnabled(2, false);
+      goStep(1);
+      toast(`读取完成，但发现 ${formatNumber(result.csv_quality.rejected_rows, 0)} 条坏行；确认质量门禁后继续。`);
+    } else {
+      setStepEnabled(2, true);
+      goStep(2);
+      toast("读取完成，请确认汇总字段。");
+    }
     pollMemoryStatus();
+    return result;
   } catch (error) {
     if (error.superseded) return;
     setBadge("readStateBadge", "读取失败", "error");
     showError(error, "数据读取失败");
+    return null;
   } finally {
     setBusy($("startBtn"), false);
   }
@@ -895,6 +1103,341 @@ async function deleteSelectedMergeTemplate() {
   }
 }
 
+function selectedAnalysisRecipe() {
+  return state.analysisRecipes.find((item) => item.id === state.selectedRecipeId) || null;
+}
+
+function closeTopbarPopover(id) {
+  const details = $(id);
+  if (details) details.open = false;
+}
+
+function setRecipeRunStatus(message = "", level = "warning") {
+  const box = $("recipeRunStatus");
+  if (!box) return;
+  box.textContent = message;
+  box.classList.toggle("hidden", !message);
+  box.classList.toggle("error", level === "error");
+  box.classList.toggle("ok", level === "ok");
+}
+
+function renderAnalysisRecipeControls() {
+  const select = $("analysisRecipeSelect");
+  select.innerHTML = state.analysisRecipes.length
+    ? state.analysisRecipes.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("")
+    : `<option value="">暂无分析方案</option>`;
+  if (selectedAnalysisRecipe()) select.value = state.selectedRecipeId;
+  const selected = Boolean(selectedAnalysisRecipe());
+  select.disabled = !state.analysisRecipes.length;
+  $("loadRecipeBtn").disabled = !selected;
+  $("updateRecipeBtn").disabled = !selected;
+  $("renameRecipeBtn").disabled = !selected;
+  $("deleteRecipeBtn").disabled = !selected;
+  $("recipeSummary").textContent = String(state.analysisRecipes.length);
+  $("recipeStorageMeta").title = state.recipeStoragePath || "本机用户数据目录";
+}
+
+async function loadAnalysisRecipes(preferredId = "") {
+  try {
+    const result = await api("/api/analysis-recipes");
+    state.analysisRecipes = result.recipes || [];
+    state.recipeStoragePath = result.storage_path || "";
+    const ids = new Set(state.analysisRecipes.map((item) => item.id));
+    if (preferredId && ids.has(preferredId)) state.selectedRecipeId = preferredId;
+    else if (!ids.has(state.selectedRecipeId)) state.selectedRecipeId = state.analysisRecipes[0]?.id || "";
+  } catch (error) {
+    state.analysisRecipes = [];
+    state.selectedRecipeId = "";
+    showError(error, "分析方案读取失败");
+  }
+  renderAnalysisRecipeControls();
+}
+
+function currentBatchReference(side) {
+  const batch = selectedBatch(side, $(`scheme${side}`).value);
+  if (!batch) return {};
+  return {
+    batch_id: batch.batch_id,
+    test_time_raw: batch.test_time_raw,
+    case_name: batch.case_name,
+    cell_name: batch.cell_name,
+    context_path: batch.context_path,
+  };
+}
+
+function currentAnalysisWorkspace() {
+  const frame = $("plotResizeFrame").getBoundingClientRect();
+  const sourceRefs = {};
+  for (const [sourceKey, source] of Object.entries(state.ingest?.sources || {})) {
+    sourceRefs[sourceKey] = {
+      path: source.path || "",
+      name: source.name || "",
+      fingerprint: source.fingerprint || "",
+    };
+  }
+  return {
+    paths: { A: $("pathAInput").value.trim(), B: $("pathBInput").value.trim() },
+    recursive: $("recursiveInput").checked,
+    selection: { A: $("schemeA").value || null, B: $("schemeB").value || null },
+    batch_refs: { A: currentBatchReference("A"), B: currentBatchReference("B") },
+    source_refs: sourceRefs,
+    columns: {
+      "537": Array.from(state.selectedColumns["537"]),
+      "714": Array.from(state.selectedColumns["714"]),
+    },
+    row_limit: state.merge ? Number(state.merge.row_limit || 0) : ($("limitRowsCheck").checked ? Math.max(1, Number($("rowLimitInput").value || 100000)) : 0),
+    analysis: {
+      filters: tableFilters(),
+      global_search: $("tableSearch").value.trim(),
+      users: sortedAnalysisUsers(),
+      metrics: state.lastMetrics.slice(0, 8),
+      visible_columns: Array.from(state.visibleColumns),
+      pinned_columns: state.pinnedColumns.slice(),
+      sort_column: state.sortColumn,
+      sort_ascending: state.sortAscending,
+      active_side: state.activeSide,
+      plot_size: { width: Math.round(frame.width || 1200), height: Math.round(frame.height || 720) },
+    },
+  };
+}
+
+async function saveCurrentAnalysisRecipe() {
+  const fallback = selectedAnalysisRecipe()?.name ? `${selectedAnalysisRecipe().name} 副本` : `分析方案 ${state.analysisRecipes.length + 1}`;
+  const name = window.prompt("分析方案名称", fallback);
+  if (name === null) return;
+  setBusy($("saveRecipeBtn"), true, "保存中...");
+  try {
+    const result = await api("/api/analysis-recipes", { name, workspace: currentAnalysisWorkspace() });
+    await loadAnalysisRecipes(result.recipe.id);
+    closeTopbarPopover("recipeDetails");
+    toast(`已保存分析方案“${result.recipe.name}”。`);
+  } catch (error) {
+    showError(error, "分析方案保存失败");
+  } finally {
+    setBusy($("saveRecipeBtn"), false);
+  }
+}
+
+async function overwriteSelectedAnalysisRecipe() {
+  const recipe = selectedAnalysisRecipe();
+  if (!recipe) return;
+  if (!window.confirm(`用当前完整工作现场覆盖“${recipe.name}”吗？`)) return;
+  setBusy($("updateRecipeBtn"), true, "覆盖中...");
+  try {
+    await api(`/api/analysis-recipes/${encodeURIComponent(recipe.id)}`, { workspace: currentAnalysisWorkspace() });
+    await loadAnalysisRecipes(recipe.id);
+    closeTopbarPopover("recipeDetails");
+    toast(`已覆盖分析方案“${recipe.name}”。`);
+  } catch (error) {
+    showError(error, "分析方案覆盖失败");
+  } finally {
+    setBusy($("updateRecipeBtn"), false);
+  }
+}
+
+async function renameSelectedAnalysisRecipe() {
+  const recipe = selectedAnalysisRecipe();
+  if (!recipe) return;
+  const name = window.prompt("新的分析方案名称", recipe.name);
+  if (name === null) return;
+  try {
+    const result = await api(`/api/analysis-recipes/${encodeURIComponent(recipe.id)}`, { name });
+    await loadAnalysisRecipes(result.recipe.id);
+    closeTopbarPopover("recipeDetails");
+    toast(`分析方案已重命名为“${result.recipe.name}”。`);
+  } catch (error) {
+    showError(error, "分析方案重命名失败");
+  }
+}
+
+async function deleteSelectedAnalysisRecipe() {
+  const recipe = selectedAnalysisRecipe();
+  if (!recipe || !window.confirm(`确定删除分析方案“${recipe.name}”吗？`)) return;
+  try {
+    await api(`/api/analysis-recipes/${encodeURIComponent(recipe.id)}`, null, { method: "DELETE" });
+    state.selectedRecipeId = "";
+    await loadAnalysisRecipes();
+    closeTopbarPopover("recipeDetails");
+    toast(`已删除分析方案“${recipe.name}”。`);
+  } catch (error) {
+    showError(error, "分析方案删除失败");
+  }
+}
+
+function recipeBatchResolution(side, workspace) {
+  const catalog = catalogForSide(side);
+  const batches = catalog.batches || [];
+  const direct = workspace.selection?.[side];
+  if (direct && batches.some((batch) => batch.batch_id === direct)) return { batchId: direct, status: "exact" };
+  const ref = workspace.batch_refs?.[side] || {};
+  const candidates = batches.filter((batch) => {
+    if (ref.context_path && batch.context_path === ref.context_path && (!ref.test_time_raw || batch.test_time_raw === ref.test_time_raw)) return true;
+    return ref.test_time_raw && batch.test_time_raw === ref.test_time_raw
+      && (!ref.case_name || batch.case_name === ref.case_name)
+      && (!ref.cell_name || batch.cell_name === ref.cell_name);
+  });
+  if (candidates.length === 1) return { batchId: candidates[0].batch_id, status: "reference" };
+  if (candidates.length > 1) return { batchId: "", status: "ambiguous" };
+  return { batchId: "", status: direct || Object.keys(ref).length ? "missing" : "empty" };
+}
+
+function applyRecipeBatchSelection(workspace) {
+  const errors = [];
+  const warnings = [];
+  for (const side of ["A", "B"]) {
+    const resolution = recipeBatchResolution(side, workspace);
+    const batchId = resolution.batchId;
+    if (batchId && Array.from($(`scheme${side}`).options).some((option) => option.value === batchId)) $(`scheme${side}`).value = batchId;
+    if (resolution.status === "reference") warnings.push(`方案 ${side} 的批次 ID 已变化，已按相同 Case / 小区 / 时间精确定位。`);
+    if (resolution.status === "missing") errors.push(`方案 ${side} 的保存批次已不存在：${workspace.batch_refs?.[side]?.context_path || workspace.selection?.[side] || "未知批次"}`);
+    if (resolution.status === "ambiguous") errors.push(`方案 ${side} 有多个批次符合保存信息，已停止自动选择。`);
+    updateBatchSelectTitle(side);
+  }
+  renderBatchSummary();
+  updateStartAvailability();
+  return { errors, warnings };
+}
+
+function validateRecipeSources(workspace) {
+  const errors = [];
+  for (const [sourceKey, saved] of Object.entries(workspace.source_refs || {})) {
+    const current = state.ingest?.sources?.[sourceKey];
+    if (!current) {
+      errors.push(`${sourceKey} 缺失（保存文件：${saved.name || saved.path || "未知"}）`);
+      continue;
+    }
+    if (saved.path && current.path && String(saved.path).toLowerCase() !== String(current.path).toLowerCase()) {
+      errors.push(`${sourceKey} 文件路径已变化`);
+      continue;
+    }
+    if (saved.fingerprint && current.fingerprint && saved.fingerprint !== current.fingerprint) {
+      errors.push(`${sourceKey} 文件内容或修改时间已变化`);
+    }
+  }
+  return errors;
+}
+
+function applyRecipeMergeSettings(workspace) {
+  const missing = [];
+  for (const trace of ["537", "714"]) {
+    const available = new Set(state.schemas?.[trace]?.columns || []);
+    const saved = workspace.columns?.[trace] || [];
+    const requested = saved.filter((column) => available.has(column));
+    missing.push(...saved.filter((column) => !available.has(column)).map((column) => `T${trace}.${column}`));
+    const fallback = state.schemas?.[trace]?.default_columns || [];
+    const selected = requested.length || trace !== "537" ? requested : fallback;
+    state.selectedColumns[trace] = new Set(selected);
+    renderColumnList(trace);
+  }
+  const rowLimit = Number(workspace.row_limit || 0);
+  $("limitRowsCheck").checked = rowLimit > 0;
+  $("rowLimitInput").disabled = rowLimit <= 0;
+  if (rowLimit > 0) $("rowLimitInput").value = String(rowLimit);
+  renderMergeInsights();
+  return missing;
+}
+
+async function applyRecipeAnalysisSettings(workspace) {
+  const analysis = workspace.analysis || {};
+  const columns = new Set(state.merge?.common_columns || []);
+  const missing = [];
+  state.columnFilters = {};
+  for (const filter of analysis.filters || []) {
+    if (columns.has(filter.column)) state.columnFilters[filter.column] = { ...filter };
+    else missing.push(`筛选列 ${filter.column}`);
+  }
+  $("tableSearch").value = analysis.global_search || "";
+  const savedUsers = (analysis.users || []).map(String);
+  state.selectedUsers = new Set(savedUsers.filter((user) => state.availableUsers.includes(user)));
+  missing.push(...savedUsers.filter((user) => !state.availableUsers.includes(user)).map((user) => `用户 ${user}`));
+  state.userPickerDraft = new Set(state.selectedUsers);
+  state.activeUser = sortedAnalysisUsers()[0] || "__ALL__";
+  const savedMetrics = analysis.metrics || [];
+  state.lastMetrics = savedMetrics.filter((metric) => columns.has(metric)).slice(0, 8);
+  missing.push(...savedMetrics.filter((metric) => !columns.has(metric)).map((metric) => `图表列 ${metric}`));
+  const visible = (analysis.visible_columns || []).filter((column) => columns.has(column));
+  state.visibleColumns = new Set(visible.length ? visible : defaultVisibleColumns());
+  const visibleSet = new Set(state.visibleColumns);
+  state.pinnedColumns = (analysis.pinned_columns || []).filter((column) => visibleSet.has(column));
+  state.sortColumn = columns.has(analysis.sort_column) ? analysis.sort_column : (state.merge.default_sort_column || "");
+  state.sortAscending = analysis.sort_ascending !== false;
+  state.activeSide = state.merge?.sides?.[analysis.active_side] ? analysis.active_side : availableSides()[0] || "A";
+  const size = analysis.plot_size || {};
+  if (Number(size.width) && Number(size.height)) {
+    $("plotResizeFrame").style.width = `${Math.max(480, Math.min(3200, Number(size.width)))}px`;
+    $("plotResizeFrame").style.height = `${Math.max(360, Math.min(6000, Number(size.height)))}px`;
+    plotSizeCustomized = true;
+  }
+  renderAnalysisUserPicker();
+  renderUserTabs();
+  renderMetricOptions();
+  renderColumnVisibilityOptions();
+  updateVisibleColumnCount();
+  renderFilterChips();
+  renderChartFilterContext();
+  await queryTable(1);
+  return missing;
+}
+
+async function continuePendingRecipe() {
+  const recipe = state.pendingRecipe;
+  if (!recipe || !state.ingest) return;
+  const missing = applyRecipeMergeSettings(recipe.workspace);
+  const merged = await startMerge();
+  if (!merged) return;
+  missing.push(...await applyRecipeAnalysisSettings(recipe.workspace));
+  if (state.lastMetrics.length) {
+    showAnalysisTab("charts");
+    await startPlot();
+  }
+  state.pendingRecipe = null;
+  const shownMissing = missing.slice(0, 20);
+  const extraMissing = missing.length > shownMissing.length ? `，另有 ${missing.length - shownMissing.length} 项` : "";
+  setRecipeRunStatus(missing.length ? `已用当前数据交集恢复；以下项缺失：\n${shownMissing.join("、")}${extraMissing}` : "分析方案已完整恢复。", missing.length ? "warning" : "ok");
+  toast(missing.length ? `分析方案“${recipe.name}”已按可用字段恢复，请查看缺失提示。` : `分析方案“${recipe.name}”已完整恢复。`);
+}
+
+async function loadAndRunSelectedRecipe() {
+  const recipe = selectedAnalysisRecipe();
+  if (!recipe) return;
+  closeTopbarPopover("recipeDetails");
+  const workspace = recipe.workspace || {};
+  state.pendingRecipe = recipe;
+  setRecipeRunStatus("");
+  $("pathAInput").value = workspace.paths?.A || "";
+  $("pathBInput").value = workspace.paths?.B || "";
+  $("recursiveInput").checked = workspace.recursive !== false;
+  setBusy($("loadRecipeBtn"), true, "恢复中...");
+  try {
+    const scanned = await scanDirectory();
+    if (!scanned) { state.pendingRecipe = null; return; }
+    const batchCheck = applyRecipeBatchSelection(workspace);
+    if (batchCheck.errors.length) {
+      setRecipeRunStatus(batchCheck.errors.join("\n"), "error");
+      throw new Error(batchCheck.errors.join("；"));
+    }
+    if (batchCheck.warnings.length) setRecipeRunStatus(batchCheck.warnings.join("\n"));
+    const ingested = await startAnalysis();
+    if (!ingested) { state.pendingRecipe = null; return; }
+    const sourceErrors = validateRecipeSources(workspace);
+    if (sourceErrors.length) {
+      setRecipeRunStatus(`源文件校验未通过：\n${sourceErrors.join("\n")}`, "error");
+      throw new Error(`分析方案源文件校验未通过：${sourceErrors.join("；")}`);
+    }
+    applyRecipeMergeSettings(workspace);
+    if (ingested.csv_quality?.gate_required && !state.csvQualityAcknowledged) {
+      toast("分析方案已读完数据；请确认 CSV 质量门禁后自动继续汇总。 ");
+      return;
+    }
+    await continuePendingRecipe();
+  } catch (error) {
+    state.pendingRecipe = null;
+    showError(error, "分析方案恢复失败");
+  } finally {
+    setBusy($("loadRecipeBtn"), false);
+  }
+}
+
 function renderColumnList(trace) {
   const schema = state.schemas?.[trace] || {};
   const query = $(`search${trace}`).value.trim().toLowerCase();
@@ -943,17 +1486,19 @@ function renderReadInsights() {
   const sources = state.ingest?.sources || {};
   const entries = Object.entries(sources);
   const box = $("readInsights");
-  if (!entries.length) { box.classList.add("hidden"); return; }
+  if (!entries.length) { box.classList.add("hidden"); $("csvQualityGate").classList.add("hidden"); return; }
   const totalRows = entries.reduce((sum, [, source]) => sum + Number(source.rows || 0), 0);
   const csvBytes = entries.reduce((sum, [, source]) => sum + Number(source.size || 0), 0);
   const cacheBytes = entries.reduce((sum, [, source]) => sum + Number(source.database_bytes || 0), 0);
   const fields537 = Number(state.schemas?.["537"]?.columns?.length || 0);
   const fields714 = Number(state.schemas?.["714"]?.columns?.length || 0);
+  const cacheHits = entries.filter(([, source]) => source.cache_hit).length;
+  const quality = state.ingest?.csv_quality || {};
   $("readInsightMetrics").innerHTML = briefItems([
     ["已读取数据源", `${entries.length} 个`],
     ["累计数据行", formatNumber(totalRows, 0)],
-    ["CSV / 磁盘缓存", `${formatBytes(csvBytes)} / ${formatBytes(cacheBytes)}`],
-    ["字段规模", `T537 ${fields537} · T714 ${fields714}`],
+    ["共享缓存命中", `${cacheHits} / ${entries.length}`],
+    ["CSV 质量", Number(quality.rejected_rows || 0) ? `坏行 ${formatNumber(quality.rejected_rows, 0)}` : "通过"],
   ]);
 
   const notes = [];
@@ -973,8 +1518,61 @@ function renderReadInsights() {
   }
   const largest = entries.reduce((best, current) => Number(current[1].rows || 0) > Number(best?.[1]?.rows || -1) ? current : best, null);
   if (largest) notes.push(`最大数据源 ${largest[0]}：${formatNumber(largest[1].rows, 0)} 行`);
+  notes.push(`CSV ${formatBytes(csvBytes)} / 缓存 ${formatBytes(cacheBytes)} · 字段 T537 ${fields537} / T714 ${fields714}`);
   $("readInsightNote").textContent = notes.join(" · ");
+  renderCsvQualityGate();
   box.classList.remove("hidden");
+}
+
+function renderCsvQualityGate() {
+  const gate = $("csvQualityGate");
+  const quality = state.ingest?.csv_quality || {};
+  const required = Boolean(quality.gate_required) && !state.csvQualityAcknowledged;
+  gate.classList.toggle("hidden", !required);
+  if (!required) return;
+  const sources = (quality.warning_sources || []).join("、") || "未知源";
+  $("csvQualityMessage").textContent = `${sources} 共拒绝 ${formatNumber(quality.rejected_rows, 0)} 行；已接收 ${formatNumber(quality.accepted_rows, 0)} 行。确认后才能进入数据汇总。`;
+  const sampleRows = [];
+  for (const [sourceKey, source] of Object.entries(state.ingest?.sources || {})) {
+    for (const sample of source?.quality?.reject_samples || []) {
+      sampleRows.push({
+        source: sourceKey,
+        file: source.name || source.path || sourceKey,
+        line: sample.line,
+        reason: sample.reason || "CSV 解析器拒绝该行",
+        rawText: sample.raw_text || "",
+        expectedFields: sample.expected_fields,
+        actualFields: sample.actual_fields,
+        keyStatus: sample.connection_key_status,
+        keyValues: sample.connection_key_values || {},
+      });
+    }
+  }
+  const sampleBox = $("csvRejectSamples");
+  const details = $("csvRejectDetails");
+  details.classList.toggle("hidden", !sampleRows.length);
+  sampleBox.innerHTML = sampleRows.length
+    ? sampleRows.map((sample) => {
+      const fieldText = sample.actualFields == null ? "字段数未知" : `字段 ${sample.actualFields} / 期望 ${sample.expectedFields}`;
+      const keyText = sample.keyStatus === "key_missing"
+        ? "连接键存在空值或无法定位"
+        : sample.keyStatus === "key_present_unverified"
+          ? `连接键可读：${Object.entries(sample.keyValues).map(([key, value]) => `${key}=${value}`).join(" · ")}`
+          : "非 537/714 连接行";
+      return `<div class="quality-sample"><b>${escapeHtml(sample.source)}</b><span title="${escapeHtml(sample.file)}">${escapeHtml(sample.file)}</span><code>${sample.line ? `CSV 行 ${escapeHtml(sample.line)}` : "行号未知"}</code><small>${escapeHtml(fieldText)} · ${escapeHtml(keyText)}<br>${escapeHtml(sample.reason)}</small>${sample.rawText ? `<pre>${escapeHtml(sample.rawText)}</pre>` : ""}</div>`;
+    }).join("")
+    : "";
+  setStepEnabled(2, false);
+}
+
+function acknowledgeCsvQuality() {
+  state.csvQualityAcknowledged = true;
+  renderCsvQualityGate();
+  setStepEnabled(2, true);
+  goStep(2);
+  toast("已记录 CSV 质量确认，可继续汇总；坏行样例仍保留在源信息中。");
+  if (state.pendingRecipe) window.setTimeout(() => continuePendingRecipe(), 60);
+  else if (state.pendingRadarDrill) window.setTimeout(() => continueRadarDrill(), 60);
 }
 
 function renderMergeInsights() {
@@ -1073,21 +1671,27 @@ function handoffT396Users() {
   }
 }
 
-async function startMerge() {
+async function startMerge(options = {}) {
   const columns537 = Array.from(state.selectedColumns["537"]);
   const columns714 = Array.from(state.selectedColumns["714"]);
   if (!columns537.length) { toast("请至少选择一个 T537 字段。"); return; }
-  const rowLimit = $("limitRowsCheck").checked ? Math.max(1, Number($("rowLimitInput").value || 100000)) : 0;
+  const forceFullRows = options.forceFullRows === true;
+  const rowLimit = forceFullRows ? 0 : ($("limitRowsCheck").checked ? Math.max(1, Number($("rowLimitInput").value || 100000)) : 0);
+  const activeButton = forceFullRows ? $("fullMergeBtn") : $("mergeBtn");
+  const otherButton = forceFullRows ? $("mergeBtn") : $("fullMergeBtn");
   hideError();
-  setBusy($("mergeBtn"), true, "合并中...");
+  setBusy(activeButton, true, forceFullRows ? "全量合并中..." : "合并中...");
+  otherButton.disabled = true;
   $("mergeProgress").classList.remove("hidden");
-  setBadge("mergeStateBadge", "汇总中", "running");
+  setBadge("mergeStateBadge", forceFullRows ? "全量汇总中" : "汇总中", "running");
   setStepEnabled(3, false);
   state.merge = null;
+  state.pinnedColumns = [];
+  closeTtiPreview();
   renderMergeInsights();
   try {
     const start = await api("/api/task/start", {
-      action: "merge", session_id: state.sessionId, columns_537: columns537, columns_714: columns714, row_limit: rowLimit,
+      action: "merge", session_id: state.sessionId, columns_537: columns537, columns_714: columns714, row_limit: rowLimit, merge_all_rows: forceFullRows,
     });
     const result = await pollTask(start.task_id, "merge", { progress: (task) => setProgress("merge", task) });
     state.merge = result;
@@ -1098,6 +1702,7 @@ async function startMerge() {
     renderMergeInsights();
     renderMergeStats();
     state.visibleColumns = new Set(defaultVisibleColumns());
+    state.pinnedColumns = [];
     state.lastMetrics = (result.default_metrics || []).slice(0, 4);
     renderColumnVisibilityOptions();
     updateVisibleColumnCount();
@@ -1109,14 +1714,17 @@ async function startMerge() {
     goStep(3);
     showAnalysisTab("table");
     await queryTable(1);
-    toast("数据汇总完成，点击列名即可排序、筛选或按 TTI 画图。");
+    toast(forceFullRows ? "全量汇总完成：已保留所有 T537 锚点行。" : "数据汇总完成，点击列名即可排序、筛选或按 TTI 画图。");
     pollMemoryStatus();
+    return result;
   } catch (error) {
     if (error.superseded) return;
     setBadge("mergeStateBadge", "汇总失败", "error");
     showError(error, "数据汇总失败");
+    return null;
   } finally {
-    setBusy($("mergeBtn"), false);
+    setBusy(activeButton, false);
+    otherButton.disabled = false;
   }
 }
 
@@ -1397,9 +2005,11 @@ async function startPlot() {
     setProgress("plot", { pct: 100, title: "图表已生成", detail: `当前对象：${scopeLabel}` });
     if ($("analysisCharts").classList.contains("active")) renderActiveFigure();
     toast("图表已更新。");
+    return result;
   } catch (error) {
     if (error.superseded) return;
     showError(error, "图表生成失败");
+    return null;
   } finally {
     setBusy($("plotBtn"), false);
     updatePlotSelectionUi();
@@ -1535,6 +2145,13 @@ function showAnalysisTab(name) {
 
 function mergedColumns() { return state.merge?.common_columns || []; }
 
+function orderedVisibleColumns() {
+  const visible = Array.from(state.visibleColumns);
+  const available = new Set(visible);
+  const pinned = state.pinnedColumns.filter((column) => available.has(column));
+  return [...pinned, ...visible.filter((column) => !pinned.includes(column))];
+}
+
 function defaultVisibleColumns() {
   const available = new Set(mergedColumns());
   const preferred = [
@@ -1573,8 +2190,25 @@ async function setVisibleColumns(columns) {
   const values = columns.filter((column) => mergedColumns().includes(column));
   if (!values.length) { toast("至少保留一个显示列。"); return; }
   state.visibleColumns = new Set(values);
+  const available = new Set(values);
+  state.pinnedColumns = state.pinnedColumns.filter((column) => available.has(column));
   renderColumnVisibilityOptions();
   await queryTable(1);
+}
+
+async function togglePinnedColumn(column) {
+  if (!state.visibleColumns.has(column)) return;
+  const index = state.pinnedColumns.indexOf(column);
+  if (index >= 0) {
+    state.pinnedColumns.splice(index, 1);
+    toast(`${column} 已恢复到原始字段顺序。`);
+  } else {
+    state.pinnedColumns = [column, ...state.pinnedColumns.filter((item) => item !== column)];
+    toast(`${column} 已移动到最左侧；可继续置左其他字段。`);
+  }
+  closeColumnMenu();
+  await queryTable(state.tablePage);
+  $("mergedTable").scrollLeft = 0;
 }
 
 function positionColumnMenu(anchor) {
@@ -1657,6 +2291,7 @@ function renderColumnMenu(refocusSearch = false) {
   const column = state.columnMenu.column;
   if (!profile || !column) return;
   const isSelected = state.lastMetrics.includes(column);
+  const isPinned = state.pinnedColumns.includes(column);
   const canPlotByTti = Boolean(profile.is_numeric && column !== "tti" && mergedColumns().includes("tti"));
   const quickPlotTitle = canPlotByTti
     ? `按 TTI 升序绘制 ${column}`
@@ -1682,7 +2317,7 @@ function renderColumnMenu(refocusSearch = false) {
     <div class="column-menu-head"><div class="column-menu-title"><strong title="${escapeHtml(column)}">${escapeHtml(column)}</strong><span>${profile.is_identifier ? "标识字段" : profile.is_numeric ? "数值字段" : "类别字段"}</span></div><button type="button" class="column-menu-close" data-column-action="close" aria-label="关闭">×</button></div>
     <div class="column-profile-grid">${stats.map(([label, value]) => `<div class="column-profile-item"><span>${label}</span><b title="${escapeHtml(value)}">${escapeHtml(value)}</b></div>`).join("")}</div>
     <button type="button" class="column-quick-plot" data-column-action="plot-tti" title="${escapeHtml(quickPlotTitle)}" ${canPlotByTti ? "" : "disabled"}>按 TTI 升序画图</button>
-    <div class="column-menu-section"><h4>排序与分析</h4><div class="column-action-grid"><button type="button" data-column-action="sort-asc">升序排列</button><button type="button" data-column-action="sort-desc">降序排列</button><button type="button" class="${isSelected ? "active" : ""}" data-column-action="toggle-plot">${isSelected ? "移出绘图" : "加入绘图"}</button><button type="button" data-column-action="hide">隐藏此列</button></div></div>
+    <div class="column-menu-section"><h4>排序与分析</h4><div class="column-action-grid"><button type="button" data-column-action="sort-asc">升序排列</button><button type="button" data-column-action="sort-desc">降序排列</button><button type="button" class="${isSelected ? "active" : ""}" data-column-action="toggle-plot">${isSelected ? "移出绘图" : "加入绘图"}</button><button type="button" class="${isPinned ? "active" : ""}" data-column-action="toggle-pin">${isPinned ? "恢复原位" : "移到最左侧"}</button><button type="button" data-column-action="hide">隐藏此列</button></div></div>
     <div class="column-menu-section"><h4>条件筛选</h4>${conditionHtml}<div class="column-action-grid"><button type="button" data-column-action="only-null">仅看空值</button><button type="button" data-column-action="not-null">排除空值</button></div></div>
     <div class="column-menu-section"><div class="column-value-head"><h4>按取值筛选</h4><div class="column-value-actions"><button type="button" data-column-action="select-visible-values">全选显示</button><button type="button" data-column-action="clear-values">清空选择</button></div></div><input id="columnValueSearch" class="small-input" type="search" value="${escapeHtml(state.columnMenu.search)}" placeholder="搜索当前列取值"><div class="column-value-list">${valueRows}</div>${profile.has_more ? `<p class="column-menu-hint">当前只加载前 500 个取值，请搜索缩小范围；筛选仍在完整数据上执行。</p>` : ""}<button type="button" class="primary-btn full-width" style="margin-top:7px;" data-column-action="apply-values">仅看选中值</button></div>
     <div class="column-menu-footer"><button type="button" data-column-action="clear-filter">清除此列条件</button><button type="button" data-column-action="close">完成</button></div>`;
@@ -1725,6 +2360,7 @@ async function handleColumnAction(action) {
     return;
   }
   if (action === "toggle-plot") { togglePlotColumn(column); renderColumnMenu(); return; }
+  if (action === "toggle-pin") { await togglePinnedColumn(column); return; }
   if (action === "hide") {
     const next = Array.from(state.visibleColumns).filter((item) => item !== column);
     closeColumnMenu();
@@ -1789,7 +2425,7 @@ async function queryTable(page = 1) {
       global_search: $("tableSearch").value.trim(),
       sort_column: state.sortColumn || null,
       sort_ascending: state.sortAscending,
-      visible_columns: Array.from(state.visibleColumns),
+      visible_columns: orderedVisibleColumns(),
     });
     if (generation !== state.generation || sessionId !== state.sessionId) return;
     state.tableResult = data;
@@ -1807,10 +2443,61 @@ function renderMergedTable(data) {
   $("mergedTable").innerHTML = `<table><thead><tr>${columns.map((column) => {
     const selected = state.lastMetrics.includes(column);
     const filtered = Boolean(filters[column]);
+    const pinned = state.pinnedColumns.includes(column);
     const sortMark = state.sortColumn === column ? (state.sortAscending ? "↑" : "↓") : "";
-    return `<th class="${selected ? "plot-selected" : ""} ${filtered ? "filtered" : ""}"><div class="column-head"><button type="button" class="column-label-button" data-column-menu="${escapeHtml(column)}" aria-haspopup="dialog" title="点击打开 ${escapeHtml(column)} 的排序、筛选与画图操作"><span class="column-name">${escapeHtml(column)}</span>${sortMark ? `<span class="sort-mark">${sortMark}</span>` : ""}</button></div></th>`;
-  }).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((column) => `<td class="${state.lastMetrics.includes(column) ? "plot-column" : ""}">${escapeHtml(row[column] ?? "NaN")}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${Math.max(1, columns.length)}">当前条件没有匹配行。</td></tr>`}</tbody></table>`;
+    const pinTitle = pinned ? `取消 ${column} 置左并恢复原始顺序` : `将 ${column} 移到最左侧`;
+    return `<th class="${selected ? "plot-selected" : ""} ${filtered ? "filtered" : ""} ${pinned ? "pinned-column" : ""}"><div class="column-head"><button type="button" class="column-pin-button" data-column-pin="${escapeHtml(column)}" aria-pressed="${pinned}" title="${escapeHtml(pinTitle)}">${pinned ? "↩" : "⇤"}</button><button type="button" class="column-label-button" data-column-menu="${escapeHtml(column)}" aria-haspopup="dialog" title="点击打开 ${escapeHtml(column)} 的排序、筛选与画图操作"><span class="column-name">${escapeHtml(column)}</span>${sortMark ? `<span class="sort-mark">${sortMark}</span>` : ""}</button></div></th>`;
+  }).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((column) => {
+    const value = row[column] ?? "NaN";
+    const content = column === "tti" && row[column] !== null && row[column] !== undefined && row[column] !== ""
+      ? `<button type="button" class="tti-cell-button" data-tti-preview="${escapeHtml(row[column])}" title="查看 TTI ${escapeHtml(row[column])} 的全部用户行">${escapeHtml(row[column])}</button>`
+      : escapeHtml(value);
+    return `<td class="${state.lastMetrics.includes(column) ? "plot-column" : ""} ${state.pinnedColumns.includes(column) ? "pinned-cell" : ""}">${content}</td>`;
+  }).join("")}</tr>`).join("") || `<tr><td colspan="${Math.max(1, columns.length)}">当前条件没有匹配行。</td></tr>`}</tbody></table>`;
   $("tablePager").innerHTML = `<span>方案 ${escapeHtml(data.side)} · ${formatNumber(data.filtered_rows, 0)} / ${formatNumber(data.total_rows, 0)} 行 · 第 ${data.page} / ${data.total_pages} 页</span><div class="pager-buttons"><button type="button" data-page="1" ${data.page <= 1 ? "disabled" : ""}>首页</button><button type="button" data-page="${Math.max(1, data.page - 1)}" ${data.page <= 1 ? "disabled" : ""}>上一页</button><button type="button" data-page="${Math.min(data.total_pages, data.page + 1)}" ${data.page >= data.total_pages ? "disabled" : ""}>下一页</button><button type="button" data-page="${data.total_pages}" ${data.page >= data.total_pages ? "disabled" : ""}>末页</button></div>`;
+}
+
+function closeTtiPreview() {
+  state.ttiPreviewToken += 1;
+  $("ttiPreviewModal").classList.add("hidden");
+  document.body.classList.remove("modal-open");
+}
+
+async function openTtiPreview(ttiValue) {
+  if (!state.sessionId || !state.merge) return;
+  const token = ++state.ttiPreviewToken;
+  $("ttiPreviewTitle").textContent = `TTI ${ttiValue} 信息速览`;
+  $("ttiPreviewMeta").innerHTML = `<span>方案 <b>${escapeHtml(state.activeSide)}</b></span><span>TTI <b>${escapeHtml(ttiValue)}</b></span>`;
+  $("ttiPreviewNotice").textContent = "正在读取未应用当前筛选的完整 TTI 上下文...";
+  $("ttiPreviewTable").innerHTML = `<div class="empty-state small">正在查询同一 TTI 的全部用户行...</div>`;
+  $("ttiPreviewModal").classList.remove("hidden");
+  document.body.classList.add("modal-open");
+  $("closeTtiPreviewBtn").focus();
+  try {
+    const data = await api(`/api/session/${state.sessionId}/tti-preview`, {
+      side: state.activeSide,
+      tti: String(ttiValue),
+      visible_columns: orderedVisibleColumns(),
+    });
+    if (token !== state.ttiPreviewToken) return;
+    const users = data.users || [];
+    const userText = users.length > 12 ? `${users.slice(0, 12).join("、")} 等 ${users.length} 个` : (users.join("、") || "-");
+    $("ttiPreviewMeta").innerHTML = [
+      ["方案", data.side], ["TTI", data.tti], ["完整行数", formatNumber(data.row_count, 0)],
+      [data.user_column || "用户", formatNumber(data.user_count, 0)], ["用户列表", userText],
+    ].map(([label, value]) => `<span>${escapeHtml(label)} <b title="${escapeHtml(value)}">${escapeHtml(value)}</b></span>`).join("");
+    $("ttiPreviewNotice").textContent = data.truncated
+      ? `当前 TTI 共 ${formatNumber(data.row_count, 0)} 行，安全上限仅展示前 ${formatNumber(data.returned_rows, 0)} 行；未应用合并明细筛选。`
+      : "已绕过合并明细中的用户筛选、列筛选和全局搜索，以下为该方案此 TTI 的全部行。";
+    const columns = data.columns || [];
+    const rows = data.rows || [];
+    $("ttiPreviewTable").innerHTML = `<table><thead><tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(row[column] ?? "NaN")}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${Math.max(1, columns.length)}">该 TTI 没有匹配行。</td></tr>`}</tbody></table>`;
+  } catch (error) {
+    if (token !== state.ttiPreviewToken) return;
+    $("ttiPreviewNotice").textContent = "TTI 上下文读取失败。";
+    $("ttiPreviewTable").innerHTML = `<div class="empty-state small">${escapeHtml(error.message)}</div>`;
+    showError(error, "TTI 信息速览失败");
+  }
 }
 
 async function exportCsv() {
@@ -1852,9 +2539,22 @@ async function pollMemoryStatus() {
     if (generation !== state.generation || sessionId !== state.sessionId) return;
     $("cacheSummary").textContent = formatBytes(data.session_bytes || 0);
     $("memorySummary").textContent = `进程内存  ${formatBytes(data.process_rss)}\n系统可用  ${formatBytes(data.sys_avail)}\n会话磁盘  ${formatBytes(data.session_bytes)}`;
-    $("cacheFiles").innerHTML = (data.sources || []).map((source) => `<div class="cache-row" title="${escapeHtml(source.path)}"><span class="cache-key">${escapeHtml(source.source_key)}</span><span class="cache-name">${escapeHtml(source.name || "-")}<br><small class="muted">${source.storage === "aggregate-only" ? "仅聚合" : "DuckDB 磁盘缓存"}</small></span><span class="cache-meta">${formatNumber(source.rows, 0)} 行<br>${formatBytes(source.database_bytes)}</span></div>`).join("") || `<p class="muted">暂无已读取文件。</p>`;
+    const shared = data.shared_cache || {};
+    $("sharedCacheSummary").textContent = `共享源缓存 ${shared.item_count || 0} 项 / ${formatBytes(shared.total_bytes || 0)} · 上限 ${formatBytes(shared.max_bytes || 0)}`;
+    $("cacheFiles").innerHTML = (data.sources || []).map((source) => `<div class="cache-row" title="${escapeHtml(`${source.path || ""}\n${source.cache_reason || ""}`)}"><span class="cache-key">${escapeHtml(source.source_key)}</span><span class="cache-name">${escapeHtml(source.name || "-")}<br><small class="muted">${escapeHtml(source.cache_reason || (source.cache_hit ? "共享缓存命中" : source.storage === "aggregate-only" ? "仅聚合" : "新建共享缓存"))}${Number(source.quality?.rejected_rows || 0) ? ` · 坏行 ${formatNumber(source.quality.rejected_rows, 0)}` : ""}</small></span><span class="cache-meta">${formatNumber(source.rows, 0)} 行<br>${formatBytes(source.database_bytes)}</span></div>`).join("") || `<p class="muted">暂无已读取文件。</p>`;
   } catch (_) {
     // 会话清理或服务重启时，下一次用户操作会给出完整提示。
+  }
+}
+
+async function clearSharedSourceCache() {
+  if (!window.confirm("清理所有会话可复用的共享源缓存？源 CSV 和当前分析会话不会删除。")) return;
+  try {
+    const result = await api("/api/cache/shared/clear", {});
+    toast(`已清理 ${result.cleared_items || 0} 项共享源缓存。`);
+    pollMemoryStatus();
+  } catch (error) {
+    showError(error, "共享缓存清理失败");
   }
 }
 
@@ -1867,6 +2567,8 @@ async function clearSessionCache() {
     Object.keys(state.taskTokens).forEach((key) => { state.taskTokens[key] += 1; });
     state.plotRenderToken += 1;
     state.sessionId = "";
+    window.localStorage.removeItem("traceLastSessionId");
+    window.localStorage.removeItem("traceActiveTasks");
     state.catalog = null;
     state.ingest = null;
     state.merge = null;
@@ -1882,6 +2584,7 @@ async function clearSessionCache() {
     state.schemas = {};
     state.columnFilters = {};
     state.visibleColumns = new Set();
+    state.pinnedColumns = [];
     state.sortColumn = "";
     state.sortAscending = true;
     state.availableUsers = [];
@@ -1898,6 +2601,7 @@ async function clearSessionCache() {
     renderUserTabs();
     setAnalysisUserPickerOpen(false);
     closeColumnMenu();
+    closeTtiPreview();
     setColumnVisibilityOpen(false);
     $("cacheSummary").textContent = "0 B";
     $("memorySummary").textContent = "当前会话已清理";
@@ -1932,7 +2636,113 @@ async function clearSessionCache() {
   }
 }
 
+async function resumePersistedTasks() {
+  if (!state.sessionId) return;
+  try {
+    const payload = await api(`/api/session/${state.sessionId}/tasks`);
+    const latestByKind = new Map();
+    for (const task of payload.tasks || []) {
+      const kind = taskUiKind(task.action === "kpi396" ? "kpi" : task.action);
+      if (!latestByKind.has(kind)) latestByKind.set(kind, task);
+    }
+    for (const [kind, task] of latestByKind.entries()) {
+      setTaskControls(kind, task.status, task.task_id);
+      if (!["queued", "running", "cancelling"].includes(task.status)) continue;
+      const tokenKind = task.action === "kpi396" ? "kpi" : task.action;
+      const progress = tokenKind === "ingest" || tokenKind === "kpi" ? renderReadTask : (item) => setProgress(tokenKind, item);
+      pollTask(task.task_id, tokenKind, { progress })
+        .then((result) => applyRecoveredTaskResult(task.action, result, task.task_id))
+        .catch((error) => { if (!error.superseded) showError(error, "恢复任务失败"); });
+    }
+  } catch (_) {
+    // 会话可能已过期，主恢复流程会处理。
+  }
+}
+
+async function restoreLastSession() {
+  const sessionId = window.localStorage.getItem("traceLastSessionId") || "";
+  if (!sessionId) return;
+  try {
+    const payload = await api(`/api/session/${sessionId}/status`);
+    const manifest = payload.session || {};
+    state.sessionId = sessionId;
+    state.catalog = manifest.catalog || null;
+    state.schemas = manifest.schemas || {};
+    state.t396 = manifest.t396 || null;
+    state.merge = Object.keys(manifest.merge || {}).length ? manifest.merge : null;
+    state.kpiResult = manifest.kpi396?.groups ? manifest.kpi396 : null;
+    state.ingest = Object.keys(manifest.sources || {}).length ? {
+      phase: manifest.phase,
+      sources: manifest.sources || {},
+      schemas: state.schemas,
+      t396: state.t396,
+      csv_quality: manifest.csv_quality || {},
+    } : null;
+    state.csvQualityAcknowledged = !manifest.csv_quality?.gate_required;
+    $("pathAInput").value = manifest.roots?.A || manifest.root || "";
+    $("pathBInput").value = manifest.roots?.B || "";
+    state.batchFilters = { A: { caseKey: "", cellKey: "" }, B: { caseKey: "", cellKey: "" } };
+    renderClassificationFilters("A", manifest.selection?.A);
+    renderClassificationFilters("B", manifest.selection?.B);
+    renderSchemeScanStats("A");
+    renderSchemeScanStats("B");
+    renderBatchSummary();
+    $("toggleSourceBtn").classList.remove("hidden");
+    $("kpiModeBtn").disabled = false;
+    updateStartAvailability();
+    if (state.ingest) {
+      renderColumnConfig();
+      renderT396();
+      renderReadInsights();
+      $("readEmpty").classList.add("hidden");
+      $("readProgressArea").classList.remove("hidden");
+      setBadge("readStateBadge", manifest.csv_quality?.gate_required ? "质量待确认" : "读取完成", manifest.csv_quality?.gate_required ? "warning" : "ready");
+      setStepEnabled(2, !manifest.csv_quality?.gate_required);
+    }
+    if (state.merge) {
+      state.selectedColumns["537"] = new Set(state.merge.selected_537 || []);
+      state.selectedColumns["714"] = new Set(state.merge.selected_714 || []);
+      renderColumnList("537");
+      renderColumnList("714");
+      state.sortColumn = state.merge.default_sort_column || "";
+      state.sortAscending = state.merge.default_sort_ascending !== false;
+      state.visibleColumns = new Set(defaultVisibleColumns());
+      state.pinnedColumns = [];
+      state.lastMetrics = (state.merge.default_metrics || []).slice(0, 4);
+      renderMergeInsights();
+      renderMergeStats();
+      await loadAnalysisUsers();
+      renderMetricOptions();
+      setStepEnabled(2, true);
+      setStepEnabled(3, true);
+      goStep(3);
+      await queryTable(1);
+    } else if (state.ingest && !manifest.csv_quality?.gate_required) {
+      goStep(2);
+    }
+    if (state.kpiResult) renderKpiResults();
+    await resumePersistedTasks();
+    pollMemoryStatus();
+    toast("已恢复上次本机会话；中断任务可直接重试。 ");
+  } catch (_) {
+    window.localStorage.removeItem("traceLastSessionId");
+    window.localStorage.removeItem("traceActiveTasks");
+  }
+}
+
 function bindEvents() {
+  document.addEventListener("click", (event) => {
+    for (const id of ["recipeDetails", "cacheDetails"]) {
+      const details = $(id);
+      if (details?.open && !details.contains(event.target)) closeTopbarPopover(id);
+    }
+  });
+  $("analysisRecipeSelect").addEventListener("change", (event) => { state.selectedRecipeId = event.target.value; renderAnalysisRecipeControls(); });
+  $("loadRecipeBtn").addEventListener("click", loadAndRunSelectedRecipe);
+  $("saveRecipeBtn").addEventListener("click", saveCurrentAnalysisRecipe);
+  $("updateRecipeBtn").addEventListener("click", overwriteSelectedAnalysisRecipe);
+  $("renameRecipeBtn").addEventListener("click", renameSelectedAnalysisRecipe);
+  $("deleteRecipeBtn").addEventListener("click", deleteSelectedAnalysisRecipe);
   $("scanBtn").addEventListener("click", scanDirectory);
   for (const id of ["pathAInput", "pathBInput"]) {
     $(id).addEventListener("keydown", (event) => { if (event.key === "Enter") scanDirectory(); });
@@ -1961,11 +2771,22 @@ function bindEvents() {
   }
   $("swapSchemesBtn").addEventListener("click", swapSchemeDirectories);
   $("matchCellBtn").addEventListener("click", matchCurrentCell);
-  $("startBtn").addEventListener("click", startAnalysis);
+  $("startBtn").addEventListener("click", () => { state.pendingRadarDrill = null; startAnalysis(); });
+  $("ackCsvQualityBtn").addEventListener("click", acknowledgeCsvQuality);
+  $("cancelReadTaskBtn").addEventListener("click", () => cancelActiveTask("read"));
+  $("retryReadTaskBtn").addEventListener("click", () => retryLastTask("read"));
+  $("cancelMergeTaskBtn").addEventListener("click", () => cancelActiveTask("merge"));
+  $("retryMergeTaskBtn").addEventListener("click", () => retryLastTask("merge"));
+  $("cancelPlotTaskBtn").addEventListener("click", () => cancelActiveTask("plot"));
+  $("retryPlotTaskBtn").addEventListener("click", () => retryLastTask("plot"));
   $("kpiModeBtn").addEventListener("click", () => setKpiMode(!state.kpiMode));
   $("autoPairKpiBtn").addEventListener("click", autoPairKpiGroups);
   $("addKpiGroupBtn").addEventListener("click", addKpiGroup);
   $("startKpiBtn").addEventListener("click", startKpiOverview);
+  $("kpiRadar").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-radar-drill]");
+    if (button) drillIntoKpiGroup(button.dataset.radarDrill, button);
+  });
   $("kpiGroupRows").addEventListener("input", (event) => {
     const row = event.target.closest("[data-kpi-id]");
     const field = event.target.dataset.kpiField;
@@ -2013,7 +2834,8 @@ function bindEvents() {
   $("updateMergeTemplateBtn").addEventListener("click", overwriteSelectedMergeTemplate);
   $("renameMergeTemplateBtn").addEventListener("click", renameSelectedMergeTemplate);
   $("deleteMergeTemplateBtn").addEventListener("click", deleteSelectedMergeTemplate);
-  $("mergeBtn").addEventListener("click", startMerge);
+  $("mergeBtn").addEventListener("click", () => startMerge({ forceFullRows: false }));
+  $("fullMergeBtn").addEventListener("click", () => startMerge({ forceFullRows: true }));
   $("t396Table").addEventListener("change", () => { $("handoffUsersBtn").disabled = !document.querySelector(".t396-user-check:checked"); });
   $("handoffUsersBtn").addEventListener("click", handoffT396Users);
   $("analysisUserPickerBtn").addEventListener("click", (event) => {
@@ -2072,6 +2894,10 @@ function bindEvents() {
   });
   $("pageSize").addEventListener("change", () => queryTable(1));
   $("mergedTable").addEventListener("click", (event) => {
+    const pinButton = event.target.closest("[data-column-pin]");
+    if (pinButton) { togglePinnedColumn(pinButton.dataset.columnPin); return; }
+    const ttiButton = event.target.closest("[data-tti-preview]");
+    if (ttiButton) { openTtiPreview(ttiButton.dataset.ttiPreview); return; }
     const menuButton = event.target.closest("[data-column-menu]");
     if (menuButton) openColumnMenu(menuButton.dataset.columnMenu, menuButton);
   });
@@ -2114,8 +2940,11 @@ function bindEvents() {
     if (!event.target.closest("#analysisUserPicker")) setAnalysisUserPickerOpen(false);
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { closeColumnMenu(); setColumnVisibilityOpen(false); setAnalysisUserPickerOpen(false); }
+    if (event.key === "Escape") { closeColumnMenu(); closeTtiPreview(); setColumnVisibilityOpen(false); setAnalysisUserPickerOpen(false); }
   });
+  $("closeTtiPreviewBtn").addEventListener("click", closeTtiPreview);
+  $("closeTtiPreviewFooterBtn").addEventListener("click", closeTtiPreview);
+  $("ttiPreviewModal").addEventListener("click", (event) => { if (event.target === $("ttiPreviewModal")) closeTtiPreview(); });
   $("exportBtn").addEventListener("click", exportCsv);
   $("resetPlotSizeBtn").addEventListener("click", resetPlotSize);
   $("plotResizeHandle").addEventListener("pointerdown", beginPlotResize);
@@ -2123,6 +2952,7 @@ function bindEvents() {
   $("plotResizeHandle").addEventListener("pointerup", endPlotResize);
   $("plotResizeHandle").addEventListener("pointercancel", endPlotResize);
   $("clearCacheBtn").addEventListener("click", clearSessionCache);
+  $("clearSharedCacheBtn").addEventListener("click", clearSharedSourceCache);
   $("closeErrorBtn").addEventListener("click", hideError);
   window.addEventListener("resize", resizeVisiblePlot, { passive: true });
   if (window.ResizeObserver) new ResizeObserver(() => resizeVisiblePlot()).observe($("analysisPlot"));
@@ -2130,5 +2960,7 @@ function bindEvents() {
 
 bindEvents();
 loadMergeColumnTemplates();
+loadAnalysisRecipes();
+restoreLastSession();
 renderChartFilterContext();
 setInterval(pollMemoryStatus, 10000);

@@ -20,6 +20,24 @@
       </div>
       <div class="top-actions">
         <span id="runtimeStatus" class="runtime-status"><i></i>本机运行</span>
+        <details id="recipeDetails" class="cache-details recipe-details">
+          <summary><span>分析方案</span><b id="recipeSummary">0</b></summary>
+          <div class="cache-popover recipe-popover">
+            <div class="cache-head"><strong>完整工作现场</strong><span id="recipeStorageMeta" class="muted">本机保存</span></div>
+            <select id="analysisRecipeSelect" aria-label="已保存的分析方案"><option value="">暂无分析方案</option></select>
+            <div class="recipe-primary-actions">
+              <button id="loadRecipeBtn" class="primary-btn" type="button" disabled>载入并分析</button>
+              <button id="saveRecipeBtn" class="secondary-btn" type="button">保存当前</button>
+            </div>
+            <div class="recipe-secondary-actions">
+              <button id="updateRecipeBtn" class="text-btn" type="button" disabled>覆盖</button>
+              <button id="renameRecipeBtn" class="text-btn" type="button" disabled>重命名</button>
+              <button id="deleteRecipeBtn" class="text-btn danger-text" type="button" disabled>删除</button>
+            </div>
+            <p class="muted recipe-note">保存 A/B 路径、批次、字段、行数、筛选、用户、图表和尺寸。</p>
+            <p id="recipeRunStatus" class="recipe-run-status hidden" role="status"></p>
+          </div>
+        </details>
         <details id="cacheDetails" class="cache-details">
           <summary><span>缓存</span><b id="cacheSummary">0 B</b></summary>
           <div class="cache-popover">
@@ -28,7 +46,9 @@
               <button id="clearCacheBtn" class="text-btn danger" type="button">清理</button>
             </div>
             <div id="memorySummary" class="memory-summary">等待扫描后显示</div>
+            <div id="sharedCacheSummary" class="shared-cache-summary">共享源缓存 0 B</div>
             <div id="cacheFiles" class="cache-files"><p class="muted">暂无已读取文件。</p></div>
+            <button id="clearSharedCacheBtn" class="text-btn danger-text full-width" type="button">清理跨会话共享缓存</button>
           </div>
         </details>
       </div>
@@ -143,10 +163,18 @@
           <div class="progress-copy"><b id="readProgressTitle">准备读取</b><span id="readProgressPct">0%</span></div>
           <div class="progress-track"><i id="readProgressBar"></i></div>
           <p id="readProgressDetail">任务已创建。</p>
+          <div class="task-actions"><button id="cancelReadTaskBtn" class="text-btn danger-text hidden" type="button">取消任务</button><button id="retryReadTaskBtn" class="secondary-btn compact-action hidden" type="button">重试失败任务</button></div>
         </div>
         <div id="readInsights" class="analysis-brief hidden" aria-live="polite">
           <div id="readInsightMetrics" class="brief-metrics"></div>
           <p id="readInsightNote" class="brief-note"></p>
+          <div id="csvQualityGate" class="quality-gate hidden">
+            <div class="quality-gate-copy">
+              <b>CSV 质量门禁</b><p id="csvQualityMessage"></p>
+              <details id="csvRejectDetails"><summary>查看坏行来源与样例</summary><div id="csvRejectSamples" class="quality-samples"></div></details>
+            </div>
+            <button id="ackCsvQualityBtn" class="secondary-btn compact-action" type="button">确认继续使用</button>
+          </div>
         </div>
         <div class="data-table-wrap compact-table">
           <table>
@@ -164,6 +192,7 @@
       <section id="kpiResults" class="kpi-results hidden" aria-labelledby="kpiResultsTitle">
         <div class="subsection-head"><div><h3 id="kpiResultsTitle">KPI 对比结果</h3><p>先看小区 Rate，再展开单组核对用户级差异。</p></div></div>
         <div id="kpiStats" class="stat-strip large"></div>
+        <div id="kpiRadar" class="kpi-radar"></div>
         <div id="kpiSummaryTable" class="data-table-wrap"></div>
         <div id="kpiUserDetails" class="kpi-user-details"></div>
       </section>
@@ -219,12 +248,14 @@
           <div class="merge-controls">
             <label class="check-control"><input id="limitRowsCheck" type="checkbox"><span>限制 T537 锚点行数</span></label>
             <label class="field-label row-limit"><span>每个方案前 N 行</span><input id="rowLimitInput" type="number" min="1000" step="10000" value="100000" disabled></label>
-            <button id="mergeBtn" class="primary-btn" type="button">一键合并 A / B</button>
+            <button id="mergeBtn" class="secondary-btn" type="button">按当前设置合并</button>
+            <button id="fullMergeBtn" class="primary-btn" type="button" title="忽略行数限制，以方案 A/B 的全部 T537 行为锚点进行合并">全量合并 A / B</button>
           </div>
           <div id="mergeProgress" class="progress-row hidden">
             <div class="progress-copy"><b id="mergeProgressTitle">正在汇总</b><span id="mergeProgressPct">0%</span></div>
             <div class="progress-track"><i id="mergeProgressBar"></i></div>
             <p id="mergeProgressDetail">正在准备。</p>
+            <div class="task-actions"><button id="cancelMergeTaskBtn" class="text-btn danger-text hidden" type="button">取消任务</button><button id="retryMergeTaskBtn" class="secondary-btn compact-action hidden" type="button">重试失败任务</button></div>
           </div>
       </div>
     </section>
@@ -319,6 +350,7 @@
           <div class="progress-copy"><b id="plotProgressTitle">生成图表</b><span id="plotProgressPct">0%</span></div>
           <div class="progress-track"><i id="plotProgressBar"></i></div>
           <p id="plotProgressDetail">正在准备。</p>
+          <div class="task-actions"><button id="cancelPlotTaskBtn" class="text-btn danger-text hidden" type="button">取消任务</button><button id="retryPlotTaskBtn" class="secondary-btn compact-action hidden" type="button">重试失败任务</button></div>
         </div>
         <div id="figureTabs" class="figure-tabs"></div>
         <div class="plot-size-toolbar">
@@ -340,6 +372,18 @@
   </div>
   <div id="toast" class="toast hidden" role="status"></div>
   <div id="columnMenu" class="column-menu hidden" role="dialog" aria-modal="false" aria-label="列操作"></div>
+  <div id="ttiPreviewModal" class="tti-preview-modal hidden" role="dialog" aria-modal="true" aria-labelledby="ttiPreviewTitle">
+    <section class="tti-preview-panel">
+      <header class="tti-preview-head">
+        <div><span class="eyebrow">TTI Context</span><h2 id="ttiPreviewTitle">TTI 信息速览</h2></div>
+        <button id="closeTtiPreviewBtn" class="tti-preview-close" type="button" aria-label="关闭 TTI 信息速览" title="关闭">×</button>
+      </header>
+      <div id="ttiPreviewMeta" class="tti-preview-meta"></div>
+      <p id="ttiPreviewNotice" class="tti-preview-notice">此处直接读取当前方案的完整合并表，不应用合并明细中的用户筛选、列筛选或全局搜索。</p>
+      <div id="ttiPreviewTable" class="data-table-wrap tti-preview-table"><div class="empty-state small">点击 TTI 后显示同一 TTI 的全部用户行。</div></div>
+      <footer class="tti-preview-footer"><span>用于快速判断同一调度时刻的其他用户是否影响当前异常。</span><button id="closeTtiPreviewFooterBtn" class="secondary-btn" type="button">关闭</button></footer>
+    </section>
+  </div>
 
   <script>window.TRACE_APP_VERSION={{ version|tojson }};</script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>

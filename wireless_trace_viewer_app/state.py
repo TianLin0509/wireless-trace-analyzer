@@ -15,6 +15,7 @@ from .config import (
     SESSION_IDLE_TTL_SECONDS,
     TASK_DONE_TTL_SECONDS,
     TASK_MAX_ITEMS,
+    TASK_STATE_ROOT,
 )
 
 
@@ -171,16 +172,70 @@ class SessionManager:
         return removed
 
 
+class TaskCancelled(RuntimeError):
+    pass
+
+
 class TaskManager:
-    def __init__(self) -> None:
+    TERMINAL_STATUSES = {"done", "error", "cancelled", "interrupted"}
+
+    def __init__(self, storage_root: Path = TASK_STATE_ROOT) -> None:
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
+        self.storage_root = Path(storage_root)
+        self.storage_root.mkdir(parents=True, exist_ok=True)
+        self._load_persisted()
+
+    def _task_path(self, task_id: str) -> Path:
+        return self.storage_root / f"{task_id}.json"
+
+    def _persist_locked(self, task_id: str) -> None:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        persisted = json.loads(json.dumps(task, ensure_ascii=False, default=str))
+        result = persisted.pop("result", None)
+        if isinstance(result, dict):
+            persisted["result_checkpoint"] = {
+                key: result.get(key)
+                for key in ("phase", "session_id")
+                if result.get(key) is not None
+            }
+        path = self._task_path(task_id)
+        temp = path.with_suffix(".tmp")
+        temp.write_text(
+            json.dumps(persisted, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+        )
+        temp.replace(path)
+
+    def _load_persisted(self) -> None:
+        for path in self.storage_root.glob("*.json"):
+            try:
+                task = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(task, dict) or not task.get("task_id"):
+                continue
+            if task.get("status") in {"queued", "running", "cancelling"}:
+                task.update(
+                    status="interrupted",
+                    pct=float(task.get("pct") or 0),
+                    title="任务因服务重启中断",
+                    detail="源文件与已完成共享缓存仍保留，可点击重试继续。",
+                    interrupted_at=time.time(),
+                    restartable=bool(task.get("request")),
+                )
+                self._tasks[str(task["task_id"])] = task
+                self._persist_locked(str(task["task_id"]))
+            else:
+                self._tasks[str(task["task_id"])] = task
 
     def start(
         self,
         action: str,
         session_id: str,
         worker: Callable[[str], dict[str, Any]],
+        request_payload: Optional[dict[str, Any]] = None,
     ) -> str:
         self.prune()
         task_id = uuid.uuid4().hex
@@ -195,14 +250,22 @@ class TaskManager:
                 "title": "排队中",
                 "detail": "任务已进入队列。",
                 "files": {},
+                "request": json.loads(
+                    json.dumps(request_payload or {}, ensure_ascii=False, default=str)
+                ),
+                "restartable": bool(request_payload),
+                "cancel_requested": False,
                 "created_at": now,
                 "updated_at": now,
             }
+            self._persist_locked(task_id)
 
         def run() -> None:
             self.update(task_id, status="running", pct=1, title="任务启动")
             try:
+                self.raise_if_cancelled(task_id)
                 result = worker(task_id)
+                self.raise_if_cancelled(task_id)
                 self.update(
                     task_id,
                     status="done",
@@ -210,6 +273,14 @@ class TaskManager:
                     title="处理完成",
                     detail="处理完成。",
                     result=result,
+                )
+            except TaskCancelled as exc:
+                self.update(
+                    task_id,
+                    status="cancelled",
+                    title="任务已取消",
+                    detail=str(exc),
+                    cancelled_at=time.time(),
                 )
             except Exception as exc:
                 self.update(
@@ -230,6 +301,7 @@ class TaskManager:
             task = self._tasks.setdefault(task_id, {})
             task.update(kwargs)
             task["updated_at"] = time.time()
+            self._persist_locked(task_id)
 
     def update_file(self, task_id: str, source_key: str, **kwargs: Any) -> None:
         with self._lock:
@@ -238,20 +310,61 @@ class TaskManager:
             file_state = files.setdefault(source_key, {})
             file_state.update(kwargs)
             task["updated_at"] = time.time()
+            self._persist_locked(task_id)
 
     def get(self, task_id: str) -> dict[str, Any]:
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
                 raise KeyError("任务不存在或已过期。")
-            return json.loads(json.dumps(task, ensure_ascii=False))
+            return json.loads(json.dumps(task, ensure_ascii=False, default=str))
 
     def has_active_for_session(self, session_id: str) -> bool:
         with self._lock:
             return any(
                 task.get("session_id") == session_id
-                and task.get("status") in {"queued", "running"}
+                and task.get("status") in {"queued", "running", "cancelling"}
                 for task in self._tasks.values()
+            )
+
+    def cancel(self, task_id: str) -> bool:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise KeyError("任务不存在或已过期。")
+            if task.get("status") in self.TERMINAL_STATUSES:
+                return False
+            task.update(
+                cancel_requested=True,
+                status="cancelling",
+                title="正在取消任务",
+                detail="等待当前分块安全结束后停止。",
+                updated_at=time.time(),
+            )
+            self._persist_locked(task_id)
+            return True
+
+    def raise_if_cancelled(self, task_id: str) -> None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            cancelled = bool(task and task.get("cancel_requested"))
+        if cancelled:
+            raise TaskCancelled("任务已按用户请求取消；已完成的共享源缓存仍可复用。")
+
+    def list_recent(self, session_id: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            tasks = [
+                task
+                for task in self._tasks.values()
+                if not session_id or task.get("session_id") == session_id
+            ]
+            tasks.sort(key=lambda task: -float(task.get("updated_at") or 0))
+            return json.loads(
+                json.dumps(
+                    tasks[: max(1, min(limit, 100))],
+                    ensure_ascii=False,
+                    default=str,
+                )
             )
 
     def prune(self) -> None:
@@ -260,23 +373,25 @@ class TaskManager:
             expired = [
                 task_id
                 for task_id, task in self._tasks.items()
-                if task.get("status") in {"done", "error"}
+                if task.get("status") in self.TERMINAL_STATUSES
                 and now - float(task.get("updated_at", now)) > TASK_DONE_TTL_SECONDS
             ]
             for task_id in expired:
                 self._tasks.pop(task_id, None)
+                self._task_path(task_id).unlink(missing_ok=True)
             overflow = len(self._tasks) - TASK_MAX_ITEMS
             if overflow > 0:
                 terminal = sorted(
                     (
                         (task_id, task)
                         for task_id, task in self._tasks.items()
-                        if task.get("status") in {"done", "error"}
+                        if task.get("status") in self.TERMINAL_STATUSES
                     ),
                     key=lambda item: float(item[1].get("updated_at", 0)),
                 )
                 for task_id, _ in terminal[:overflow]:
                     self._tasks.pop(task_id, None)
+                    self._task_path(task_id).unlink(missing_ok=True)
 
 
 SESSIONS = SessionManager()

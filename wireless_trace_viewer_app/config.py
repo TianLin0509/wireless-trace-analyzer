@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 
-APP_VERSION = "v0.17.4 Codex"
+APP_VERSION = "v0.19.0 Codex"
 APP_TITLE = f"无线外场 Trace A/B 分析台 {APP_VERSION}"
 
 HOST = os.environ.get("TRACE_HOST", "127.0.0.1")
@@ -24,6 +24,16 @@ USER_DATA_ROOT = Path(
     )
 ).expanduser()
 MERGE_COLUMN_TEMPLATE_PATH = USER_DATA_ROOT / "merge-column-templates.json"
+ANALYSIS_RECIPE_PATH = USER_DATA_ROOT / "analysis-recipes.json"
+
+SHARED_SOURCE_CACHE_ROOT = CACHE_ROOT / "_shared_sources"
+TASK_STATE_ROOT = CACHE_ROOT / "_tasks"
+SHARED_SOURCE_CACHE_MAX_BYTES = int(
+    float(os.environ.get("TRACE_SHARED_CACHE_MAX_GB", "20")) * 1024 ** 3
+)
+SHARED_SOURCE_CACHE_TTL_SECONDS = int(
+    float(os.environ.get("TRACE_SHARED_CACHE_TTL_DAYS", "14")) * 86400
+)
 
 MAX_SCAN_FILES = 5000
 MAX_READ_WORKERS = max(1, min(4, int(os.environ.get("TRACE_READ_WORKERS", "2"))))
@@ -34,7 +44,7 @@ MIN_AVAILABLE_MEMORY_BYTES = int(
     float(os.environ.get("TRACE_MIN_AVAILABLE_GB", "1")) * 1024 ** 3
 )
 SESSION_IDLE_TTL_SECONDS = int(os.environ.get("TRACE_SESSION_TTL_SECONDS", "7200"))
-TASK_DONE_TTL_SECONDS = 900
+TASK_DONE_TTL_SECONDS = int(os.environ.get("TRACE_TASK_TTL_SECONDS", "86400"))
 TASK_MAX_ITEMS = 80
 MAX_PAGE_SIZE = 2000
 MAX_FILTER_UNIQUES = 500
@@ -42,6 +52,7 @@ MAX_CHART_METRICS = 8
 MAX_CHART_USERS = max(1, int(os.environ.get("TRACE_MAX_CHART_USERS", "100")))
 MAX_CHART_POINTS = 3000
 MAX_CDF_POINTS = 1600
+MAX_CSV_REJECT_SAMPLES = 20
 
 T396_REQUIRED_COLUMNS = [
     "dlAmbr",

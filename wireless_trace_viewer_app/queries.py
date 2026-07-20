@@ -203,6 +203,117 @@ def query_rows(
             session.db_lock.release()
 
 
+def tti_preview(
+    session: SessionState,
+    side: str,
+    tti_value: Any,
+    visible_columns: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Return every unfiltered row for one TTI.
+
+    This intentionally does not accept table filters or global search. The
+    preview is a context escape hatch from a narrowed analysis view, so it must
+    always query the complete merged side table.
+    """
+
+    table, metadata = side_table(session, side)
+    columns = list(metadata.get("columns") or [])
+    allowed = set(columns)
+    if "tti" not in allowed:
+        raise ValueError("当前汇总结果缺少 tti，无法生成 TTI 信息速览。")
+    lookup = str(tti_value if tti_value is not None else "").strip()
+    if not lookup:
+        raise ValueError("TTI 不能为空。")
+
+    requested = [
+        str(column)
+        for column in (visible_columns or [])
+        if str(column) in allowed and not str(column).startswith("__")
+    ]
+    context_columns = [
+        column
+        for column in (
+            "tti",
+            "crnti",
+            "HH:MM:SS",
+            "frm",
+            "slotNo",
+            "ambr",
+            "usrId",
+            "schType",
+            "suOrMuFlag",
+            "jtMode",
+            "714_匹配状态",
+        )
+        if column in allowed
+    ]
+    output_columns: list[str] = []
+    for column in [*context_columns, *requested]:
+        if column not in output_columns:
+            output_columns.append(column)
+    if not output_columns:
+        output_columns = [column for column in columns if not column.startswith("__")]
+
+    tti = quote_ident("tti")
+    # Data may be inferred as DOUBLE, while the browser serializes 100.0 as
+    # "100". Preserve exact string matching and add a numeric-equivalence path.
+    where_sql = (
+        f"(CAST({tti} AS VARCHAR) = ? OR "
+        f"(TRY_CAST({tti} AS DOUBLE) IS NOT NULL AND TRY_CAST(? AS DOUBLE) IS NOT NULL "
+        f"AND TRY_CAST({tti} AS DOUBLE) = TRY_CAST(? AS DOUBLE)))"
+    )
+    parameters = [lookup, lookup, lookup]
+    selected_sql = ", ".join(quote_ident(column) for column in output_columns)
+    connection = _connect_read_only(session)
+    try:
+        row_count = int(
+            connection.execute(
+                f"SELECT COUNT(*) FROM {quote_ident(table)} WHERE {where_sql}",
+                parameters,
+            ).fetchone()[0]
+        )
+        user_column = "ambr" if "ambr" in allowed else ("usrId" if "usrId" in allowed else None)
+        user_count = 0
+        users: list[str] = []
+        if user_column:
+            user_identifier = quote_ident(user_column)
+            user_rows = connection.execute(
+                f"SELECT DISTINCT CAST({user_identifier} AS VARCHAR) AS value "
+                f"FROM {quote_ident(table)} WHERE {where_sql} "
+                f"AND {user_identifier} IS NOT NULL ORDER BY value",
+                parameters,
+            ).fetchall()
+            users = [str(row[0]) for row in user_rows if row[0] not in (None, "")]
+            user_count = len(users)
+        frame = connection.execute(
+            f"SELECT {selected_sql} FROM {quote_ident(table)} "
+            f"WHERE {where_sql} ORDER BY __source_row",
+            parameters,
+        ).fetch_df()
+        rows = [
+            {str(key): clean_scalar(value) for key, value in row.items()}
+            for row in frame.to_dict(orient="records")
+        ]
+        return {
+            "side": "B" if str(side).upper() == "B" else "A",
+            "tti": lookup,
+            "columns": output_columns,
+            "rows": rows,
+            "row_count": row_count,
+            "returned_rows": len(rows),
+            "truncated": False,
+            "user_column": user_column,
+            "user_count": user_count,
+            "users": users,
+            "filters_ignored": True,
+        }
+    finally:
+        try:
+            connection.close()
+        finally:
+            session.db_lock.release()
+
+
 def filter_options(
     session: SessionState,
     column: Optional[str] = None,
@@ -905,6 +1016,7 @@ def run_plot_task(
     global_search: str = "",
     user_values: Optional[list[Any]] = None,
 ) -> dict[str, Any]:
+    TASKS.raise_if_cancelled(task_id)
     merge_manifest = session.manifest.get("merge", {})
     allowed = set(merge_manifest.get("common_columns") or [])
     numeric_columns = set(merge_manifest.get("numeric_columns") or [])
@@ -932,6 +1044,7 @@ def run_plot_task(
     try:
         scope_contexts: list[dict[str, Any]] = []
         for scope in scopes:
+            TASKS.raise_if_cancelled(task_id)
             side_context: dict[
                 str, tuple[str, dict[str, Any], str, list[Any]]
             ] = {}
@@ -962,11 +1075,13 @@ def run_plot_task(
         total_steps = max(1, len(selected) * len(scope_contexts))
         completed_steps = 0
         for index, metric in enumerate(selected, start=1):
+            TASKS.raise_if_cancelled(task_id)
             is_numeric_metric = metric in numeric_columns and metric not in ID_LIKE_COLUMNS
             if is_numeric_metric:
                 sequence_rows: list[dict[str, Any]] = []
                 cdf_rows: list[dict[str, Any]] = []
                 for scope in scope_contexts:
+                    TASKS.raise_if_cancelled(task_id)
                     completed_steps += 1
                     TASKS.update(
                         task_id,
@@ -991,6 +1106,7 @@ def run_plot_task(
                         where_sql,
                         parameters,
                     ) in scope["sides"].items():
+                        TASKS.raise_if_cancelled(task_id)
                         if metric not in set(metadata.get("numeric_columns") or []):
                             continue
                         stats = _metric_stats(
@@ -1043,6 +1159,7 @@ def run_plot_task(
             else:
                 category_rows: list[dict[str, Any]] = []
                 for scope in scope_contexts:
+                    TASKS.raise_if_cancelled(task_id)
                     completed_steps += 1
                     TASKS.update(
                         task_id,
@@ -1066,6 +1183,7 @@ def run_plot_task(
                         where_sql,
                         parameters,
                     ) in scope["sides"].items():
+                        TASKS.raise_if_cancelled(task_id)
                         if metric not in set(metadata.get("columns") or []):
                             continue
                         category_stats[side] = _category_stats(
@@ -1090,9 +1208,11 @@ def run_plot_task(
                 )
 
         for scope in scope_contexts:
+            TASKS.raise_if_cancelled(task_id)
             for side, (table, metadata, where_sql, parameters) in scope[
                 "sides"
             ].items():
+                TASKS.raise_if_cancelled(task_id)
                 data = _bler_data(
                     connection, table, metadata, where_sql, parameters
                 )
@@ -1101,6 +1221,7 @@ def run_plot_task(
         bler_figure = _bler_figure(bler_by_side, rate_lookup)
         if bler_figure:
             figures["BLER · 并列柱形图"] = bler_figure
+        TASKS.raise_if_cancelled(task_id)
         return {
             "figures": figures,
             "summary_rows": summary_rows,
