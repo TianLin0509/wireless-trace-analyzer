@@ -1,0 +1,11 @@
+{
+  "name": "Trace A/B 分析台",
+  "short_name": "Trace A/B",
+  "description": "无线外场 T396/T537/T714 A/B 对比分析；数据只在本机浏览器内处理。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f8",
+  "theme_color": "#0e6b4e",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
