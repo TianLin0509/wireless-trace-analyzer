@@ -98,6 +98,21 @@ describe('筛选 SQL', () => {
   it('用户范围在缺 ambr 的一侧返回空集，而不是被忽略', () => {
     expect(filterSql([userScope(['5001'])], ['cw0SuMcs'])).toBe('FALSE');
   });
+  it('用户范围为空列表时也返回空集', () => {
+    expect(filterSql([userScope([])], cols)).toBe('FALSE');
+  });
+  it('介于 / 包含 / 排除', () => {
+    expect(filterSql([{ column: 'cw0SuMcs', op: 'between', value: 3, value2: 9 }], cols)).toContain('BETWEEN 3 AND 9');
+    expect(filterSql([{ column: 'schType', op: 'contains', value: "D'L" }], cols)).toContain("LIKE '%d''l%'");
+    expect(filterSql([{ column: 'schType', op: 'not_in', value: ['DL'] }], cols)).toMatch(/^NOT COALESCE\(/);
+  });
+  it('列名里的双引号被转义', () => {
+    expect(filterSql([{ column: 'a"b', op: 'eq', value: 'x' }], ['a"b'])).toContain('"a""b"');
+  });
+  it('全局搜索覆盖全部列（不再只搜前 40 列）', () => {
+    const many = Array.from({ length: 60 }, (_, i) => `c${i}`);
+    expect(filterSql([], many, 'x')).toContain('"c59"');
+  });
 });
 
 describe('T396 对比口径', () => {

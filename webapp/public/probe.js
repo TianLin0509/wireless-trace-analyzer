@@ -1,3 +1,4 @@
+const esc=(t)=>String(t).replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 let speed=null;const caps=[];const row=(k,v,cls)=>caps.push(`<tr><td>${k}</td><td class="${cls||''}">${v}</td></tr>`);
 const ua=navigator.userAgent;const m=ua.match(/(Edg|Chrome)\/(\d+)/);const ver=m?+m[2]:0;
 row('浏览器',m?`${m[1]==='Edg'?'Edge':'Chrome'} ${ver}`:ua.slice(0,80),ver>=110?'ok':'bad');
@@ -19,14 +20,14 @@ function verdict(){const v=document.getElementById('verdict');
 async function walk(dir,out,path,depth){for await(const [name,h] of dir.entries()){if(h.kind==='file'&&/\.csv$/i.test(name))out.push({h,path:path+name});else if(h.kind==='directory'&&depth<8)await walk(h,out,path+name+'/',depth+1);if(out.length>5000)return}}
 async function measure(file,onp){const t0=performance.now();let n=0,lines=0;const r=file.stream().getReader();for(;;){const {done,value}=await r.read();if(done)break;n+=value.length;for(let i=0;i<value.length;i++)if(value[i]===10)lines++;onp(n/file.size)}return {sec:(performance.now()-t0)/1000,lines}}
 document.getElementById('pick').onclick=async()=>{const res=document.getElementById('pickRes');let files=[];
- try{if(hasDir){const d=await showDirectoryPicker();res.innerHTML='正在扫描…';await walk(d,files,d.name+'/',0)}else{const inp=document.createElement('input');inp.type='file';inp.webkitdirectory=true;await new Promise(ok=>{inp.onchange=ok;inp.click()});files=[...inp.files].filter(f=>/\.csv$/i.test(f.name)).map(f=>({file:f,path:f.webkitRelativePath}))}}catch(e){res.innerHTML=`<span class="bad">未选择或无权限：${e.message}</span>`;return}
+ try{if(hasDir){const d=await showDirectoryPicker();res.innerHTML='正在扫描…';await walk(d,files,d.name+'/',0)}else{const inp=document.createElement('input');inp.type='file';inp.webkitdirectory=true;await new Promise(ok=>{inp.onchange=ok;inp.click()});files=[...inp.files].filter(f=>/\.csv$/i.test(f.name)).map(f=>({file:f,path:f.webkitRelativePath}))}}catch(e){res.innerHTML=`<span class="bad">未选择或无权限：${esc(e.message)}</span>`;return}
  const traced=files.filter(f=>/Dest_T(396|537|714)_/i.test(f.path));
  if(!files.length){res.innerHTML='<span class="bad">没有找到 CSV 文件。</span>';return}
  for(const f of files)if(!f.file)f.file=await f.h.getFile();
  const big=files.sort((a,b)=>b.file.size-a.file.size)[0];
- res.innerHTML=`找到 ${files.length} 个 CSV（其中 T396/537/714 共 ${traced.length} 个）。正在读取最大的文件 <b>${big.path}</b>（${(big.file.size/1024**2).toFixed(0)} MB）…<div class="bar"><i id="pb"></i></div>`;
+ res.innerHTML=`找到 ${files.length} 个 CSV（其中 T396/537/714 共 ${traced.length} 个）。正在读取最大的文件 <b>${esc(big.path)}</b>（${(big.file.size/1024**2).toFixed(0)} MB）…<div class="bar"><i id="pb"></i></div>`;
  const head=await big.file.slice(0,65536).text();const cols=(head.split(/\r?\n/)[0]||'').split(',').length;
  const r=await measure(big.file,p=>document.getElementById('pb').style.width=(p*100).toFixed(1)+'%');
  speed=big.file.size/1024**2/r.sec;
- res.innerHTML+=`<table><tr><td>文件</td><td>${big.path}</td></tr><tr><td>大小 / 行数 / 列数</td><td>${(big.file.size/1024**2).toFixed(0)} MB / ${r.lines.toLocaleString()} 行 / ${cols} 列</td></tr><tr><td>纯读取耗时</td><td class="ok">${r.sec.toFixed(1)} 秒（${speed.toFixed(0)} MB/s）</td></tr></table><p class="note">这只测“把文件从磁盘或网络盘读进浏览器”的速度；正式分析还要解析和计算，实测约再多 2–3 倍时间。</p>`;
+ res.innerHTML+=`<table><tr><td>文件</td><td>${esc(big.path)}</td></tr><tr><td>大小 / 行数 / 列数</td><td>${(big.file.size/1024**2).toFixed(0)} MB / ${r.lines.toLocaleString()} 行 / ${cols} 列</td></tr><tr><td>纯读取耗时</td><td class="ok">${r.sec.toFixed(1)} 秒（${speed.toFixed(0)} MB/s）</td></tr></table><p class="note">这只测“把文件从磁盘或网络盘读进浏览器”的速度；正式分析还要解析和计算，实测约再多 2–3 倍时间。</p>`;
  verdict()};

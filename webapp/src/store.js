@@ -57,7 +57,7 @@ export function showError(title, err, actions = []) {
   const hints = [...actions];
   if (/NotAllowedError|permission/i.test(msg)) hints.push('浏览器没有拿到文件夹读取授权：点击“重新授权”或重新选择文件夹。');
   if (/NotFoundError|could not be found|requested file/i.test(msg)) hints.push('文件可能已被移动、删除或网络盘断开：确认文件仍在原位置后重新扫描。');
-  if (/out of memory|memory|allocation/i.test(msg)) hints.push('浏览器内存不足：减少汇总字段，或关闭其他占内存的标签页后重试。');
+  if (/out of memory|memory|allocation|Aborted|RuntimeError|unreachable/i.test(msg)) hints.push('计算引擎内存不足或已崩溃：刷新页面后减少汇总字段再试（浏览器单页内存上限约 4GB）。');
   if (/缺少汇总连接字段|缺少字段/.test(msg)) hints.push('该文件表头与预期不符：检查是否选错了跟踪号或文件被截断。');
   errorBox.value = { title, message: msg, hints };
 }

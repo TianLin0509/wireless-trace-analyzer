@@ -73,9 +73,11 @@ export function StartPage() {
     try {
       for (const side of ['A', 'B']) {
         const h = r.handles?.[side];
-        if (!h) continue;
-        if (!(await ensurePermission(h))) throw new Error(`没有获得方案 ${side} 文件夹（${h.name}）的读取授权。`);
-        await loadSide(side, { handle: h });
+        if (h && !(await ensurePermission(h))) throw new Error(`没有获得方案 ${side} 文件夹（${h.name}）的读取授权。`);
+      }
+      for (const side of ['A', 'B']) {
+        const h = r.handles?.[side];
+        if (h) await loadSide(side, { handle: h });
       }
       const find = (side) => S.dirs[side].value?.catalog.batches.find((b) => b.batchId === r.batchIds?.[side]) || null;
       const next = { A: find('A'), B: find('B') };

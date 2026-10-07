@@ -62,8 +62,11 @@ export async function sniffFile(file) {
     const cut = bytes.lastIndexOf(10);
     text = new TextDecoder('utf-8', { fatal: true }).decode(cut > 0 ? bytes.subarray(0, cut + 1) : bytes);
   } catch {
+    // 非 UTF-8（多为 GBK）：DuckDB 按 latin-1 逐字节读取，这里也按 latin-1 解码表头，保证两边列名一致
     encoding = 'latin-1';
-    text = new TextDecoder('gb18030').decode(bytes);
+    let t = '';
+    for (let i = 0; i < bytes.length; i += 8192) t += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    text = t;
   }
   const info = sniffText(text);
   const sampleBytes = Math.max(1, Math.min(bytes.length, file.size));

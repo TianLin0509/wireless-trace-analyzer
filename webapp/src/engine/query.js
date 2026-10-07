@@ -28,7 +28,10 @@ export function filterSql(filters, allowedColumns, globalSearch = '') {
       case 'in':
       case 'not_in': {
         const vals = (Array.isArray(f.value) ? f.value : [f.value]).map(String).filter((v) => v !== '');
-        if (!vals.length) continue;
+        if (!vals.length) {
+          if (f.scope) clauses.push('FALSE');
+          continue;
+        }
         const hasNan = vals.includes('NaN');
         const real = vals.filter((v) => v !== 'NaN');
         const parts = [];
@@ -63,7 +66,7 @@ export function filterSql(filters, allowedColumns, globalSearch = '') {
   }
   const q = String(globalSearch || '').trim().toLowerCase();
   if (q) {
-    const searchable = [...allowed].filter((c) => !c.startsWith('__')).slice(0, 40);
+    const searchable = [...allowed].filter((c) => !c.startsWith('__'));
     if (searchable.length) {
       const like = qs('%' + q + '%');
       clauses.push('(' + searchable.map((c) => `LOWER(COALESCE(CAST(${qi(c)} AS VARCHAR), '')) LIKE ${like}`).join(' OR ') + ')');
@@ -81,7 +84,7 @@ const ttiOrder = (allowed) =>
 export async function queryRows(side, { page = 1, pageSize = 200, filters = [], search = '', sort = null, columns = null }) {
   const allowed = new Set(side.columns);
   const where = filterSql(filters, side.columns, search);
-  const [{ total, filtered }] = await query(`SELECT (SELECT count(*) FROM ${qi(side.table)}) AS total, count(*) AS filtered FROM ${qi(side.table)} WHERE ${where}`);
+  const [{ __total: total, __filtered: filtered }] = await query(`SELECT (SELECT count(*) FROM ${qi(side.table)}) AS __total, count(*) AS __filtered FROM ${qi(side.table)} WHERE ${where}`);
   const totalPages = Math.max(1, Math.ceil(filtered / pageSize));
   const p = Math.max(1, Math.min(page, totalPages));
   let order = ttiOrder(allowed);
@@ -103,21 +106,21 @@ export async function columnProfile(side, column, { filters = [], search = '', v
   const id = qi(column);
   const nullish = `(${id} IS NULL OR TRIM(CAST(${id} AS VARCHAR)) = '' OR LOWER(CAST(${id} AS VARCHAR)) = 'nan')`;
   const isNumeric = side.numericColumns.includes(column);
-  const [base] = await query(`SELECT count(*) AS n, sum(CASE WHEN ${nullish} THEN 1 ELSE 0 END) AS nulls,
-    count(DISTINCT CASE WHEN NOT ${nullish} THEN CAST(${id} AS VARCHAR) END) AS distinct_n FROM ${qi(side.table)} WHERE ${where}`);
+  const [base] = await query(`SELECT count(*) AS __n, sum(CASE WHEN ${nullish} THEN 1 ELSE 0 END)::BIGINT AS __nulls,
+    count(DISTINCT CASE WHEN NOT ${nullish} THEN CAST(${id} AS VARCHAR) END) AS __distinct FROM ${qi(side.table)} WHERE ${where}`);
   let stats = null;
   if (isNumeric) {
-    [stats] = await query(`SELECT count(v) AS count, avg(v) AS mean, min(v) AS min, quantile_cont(v, 0.5) AS p50, quantile_cont(v, 0.9) AS p90, max(v) AS max
-      FROM (SELECT TRY_CAST(${id} AS DOUBLE) AS v FROM ${qi(side.table)} WHERE ${where}) WHERE v IS NOT NULL`);
+    [stats] = await query(`SELECT count(__v) AS count, avg(__v) AS mean, min(__v) AS min, quantile_cont(__v, 0.5) AS p50, quantile_cont(__v, 0.9) AS p90, max(__v) AS max
+      FROM (SELECT TRY_CAST(${id} AS DOUBLE) AS __v FROM ${qi(side.table)} WHERE ${where}) WHERE __v IS NOT NULL`);
   }
   const vs = String(valueSearch || '').trim().toLowerCase();
-  const values = await query(`SELECT CAST(${id} AS VARCHAR) AS value, count(*) AS n FROM ${qi(side.table)}
+  const values = await query(`SELECT CAST(${id} AS VARCHAR) AS __value, count(*) AS __n FROM ${qi(side.table)}
     WHERE ${where} AND NOT ${nullish} ${vs ? `AND LOWER(CAST(${id} AS VARCHAR)) LIKE ${qs('%' + vs + '%')}` : ''}
-    GROUP BY value ORDER BY ${isNumeric ? 'TRY_CAST(value AS DOUBLE)' : 'n DESC, value'} LIMIT ${MAX_FILTER_UNIQUES + 1}`);
+    GROUP BY __value ORDER BY ${isNumeric ? 'TRY_CAST(__value AS DOUBLE)' : '__n DESC, __value'} LIMIT ${MAX_FILTER_UNIQUES + 1}`);
   return {
     column, isNumeric,
-    rowCount: base.n, nullCount: base.nulls || 0, distinctCount: base.distinct_n,
-    values: values.slice(0, MAX_FILTER_UNIQUES).map((r) => ({ value: r.value, count: r.n })),
+    rowCount: base.__n, nullCount: base.__nulls || 0, distinctCount: base.__distinct,
+    values: values.slice(0, MAX_FILTER_UNIQUES).map((r) => ({ value: r.__value, count: r.__n })),
     hasMore: values.length > MAX_FILTER_UNIQUES,
     stats,
   };
@@ -129,14 +132,18 @@ const TTI_CONTEXT = ['tti', 'crnti', 'HH:MM:SS', 'frm', 'slotNo', 'ambr', 'usrId
 export async function ttiPreview(side, ttiValue, visibleColumns = []) {
   if (!side.columns.includes('tti')) throw new Error('当前汇总结果缺少 tti。');
   const v = String(ttiValue ?? '').trim();
+  const byLower = new Map(side.columns.map((c) => [c.toLowerCase(), c]));
   const cols = [];
-  for (const c of [...TTI_CONTEXT, ...visibleColumns]) if (side.columns.includes(c) && !c.startsWith('__') && !cols.includes(c)) cols.push(c);
+  for (const want of [...TTI_CONTEXT, ...visibleColumns]) {
+    const c = byLower.get(String(want).toLowerCase());
+    if (c && !c.startsWith('__') && !cols.includes(c)) cols.push(c);
+  }
   const n = Number(v);
   const where = Number.isFinite(n)
     ? `(CAST("tti" AS VARCHAR) = ${qs(v)} OR TRY_CAST("tti" AS DOUBLE) = ${n})`
     : `CAST("tti" AS VARCHAR) = ${qs(v)}`;
   const rows = await query(`SELECT ${cols.map(qi).join(', ')} FROM ${qi(side.table)} WHERE ${where} ORDER BY __source_row LIMIT 500`);
-  const users = [...new Set(rows.map((r) => r.ambr).filter((x) => x != null && x !== ''))];
+  const users = [...new Set(rows.map((r) => r.ambr).filter((x) => x != null && x !== ''))].map(String);
   return { tti: v, columns: cols, rows, users };
 }
 
@@ -147,7 +154,7 @@ export async function exportCsv(side, { filters = [], search = '', columns = nul
   const out = (columns || side.visibleColumns).filter((c) => allowed.has(c));
   const numeric = new Set(side.numericColumns);
   const select = out.map((c) => numeric.has(c) ? qi(c)
-    : `CASE WHEN ${qi(c)} IS NULL THEN NULL WHEN LEFT(CAST(${qi(c)} AS VARCHAR), 1) IN ('=', '+', '-', '@') THEN '''' || CAST(${qi(c)} AS VARCHAR) ELSE CAST(${qi(c)} AS VARCHAR) END AS ${qi(c)}`);
+    : `CASE WHEN ${qi(c)} IS NULL THEN NULL WHEN LEFT(CAST(${qi(c)} AS VARCHAR), 1) IN ('=', '+', '-', '@', chr(9), chr(13)) THEN '''' || CAST(${qi(c)} AS VARCHAR) ELSE CAST(${qi(c)} AS VARCHAR) END AS ${qi(c)}`);
   const fname = `export_${side.side}_${Date.now()}.csv`;
   const buf = await copyOut(`COPY (SELECT ${select.join(', ')} FROM ${qi(side.table)} WHERE ${where} ${ttiOrder(allowed)}) TO ${qs(fname)} (HEADER, DELIMITER ',')`, fname);
   return new Blob([new Uint8Array([0xef, 0xbb, 0xbf]), buf], { type: 'text/csv;charset=utf-8' });

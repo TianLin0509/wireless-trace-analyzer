@@ -36,7 +36,7 @@ with sync_playwright() as p:
         sel = pg.locator(".pick").nth(i).locator("select").last
         sel.select_option(sel.locator("option", has_text=cell).first.get_attribute("value"))
     pg.get_by_role("button", name="开始分析").click()
-    pg.wait_for_function("() => /已就绪|失败/.test(document.querySelector('.prog')?.textContent || '')", timeout=600000)
+    pg.wait_for_function("() => /已就绪|失败|部分完成|已停止/.test(document.querySelector('.prog')?.textContent || '')", timeout=600000)
     res = pg.evaluate(JS)
     json.dump(res, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print("ok", out)

@@ -5,6 +5,26 @@ import { startRun } from '../pipeline.js';
 import { localDateTag } from './fmt.js';
 
 const sameSet = (a = [], b = []) => a.length === b.length && a.every((x) => b.includes(x));
+const strList = (v, fallback) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.length < 256) : fallback);
+
+/** 导入的视图逐字段校验：类型不对的字段回落到默认值，避免坏文件让界面出错。 */
+export function sanitizeView(item) {
+  const d = S.defaultView();
+  const filters = Array.isArray(item.filters) ? item.filters.filter((f) => f && typeof f.column === 'string' && typeof f.op === 'string') : [];
+  return {
+    ...d,
+    name: String(item.name || '导入的视图').slice(0, 60),
+    columns537: strList(item.columns537, d.columns537),
+    columns714: strList(item.columns714, d.columns714),
+    columnOrder: strList(item.columnOrder, []),
+    hiddenColumns: strList(item.hiddenColumns, []),
+    chartMetrics: strList(item.chartMetrics, d.chartMetrics).slice(0, 8),
+    filters,
+    search: typeof item.search === 'string' ? item.search : '',
+    sort: item.sort && typeof item.sort.column === 'string' ? { column: item.sort.column, asc: !!item.sort.asc } : null,
+    chartMode: item.chartMode === 'overlay' ? 'overlay' : 'split',
+  };
+}
 
 /** “视图”= 汇总字段 + 列顺序/隐藏 + 表格筛选与搜索 + 图表字段与模式。取代旧版三套模板。 */
 export function ViewMenu() {
@@ -71,7 +91,7 @@ export function ViewMenu() {
           let name = item.name;
           while (names.has(name)) name += '·';
           names.add(name);
-          await saveView({ ...S.defaultView(), ...item, id: null, name });
+          await saveView({ ...sanitizeView({ ...item, name }), id: null, name });
           n++;
         }
         refresh();

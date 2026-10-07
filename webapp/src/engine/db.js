@@ -23,7 +23,12 @@ export async function getDb() {
       const worker = new Worker(bundle.mainWorker);
       const instance = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
       const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('计算引擎加载超时（60 秒）。请检查网络后刷新页面。')), 60000));
-      await Promise.race([instance.instantiate(bundle.mainModule, bundle.pthreadWorker), timeout]);
+      try {
+        await Promise.race([instance.instantiate(bundle.mainModule, bundle.pthreadWorker), timeout]);
+      } catch (err) {
+        worker.terminate(); // 超时或失败时释放这次的后台线程，重试会新建
+        throw err;
+      }
       await instance.open({ query: { castBigIntToDouble: true } });
       conn = await instance.connect();
       await conn.query('SET preserve_insertion_order = true');
@@ -68,6 +73,13 @@ export function unregisterFile(key) {
 
 function convert(value) {
   if (typeof value === 'bigint') return Number(value);
+  // 128 位整数（DuckDB 对整数求和的结果类型）在 Arrow 里是 4 个 32 位字：按小端拼回普通数字，防止漏加类型转换时显示成数组
+  if (value instanceof Uint32Array && value.length === 4) {
+    const neg = value[3] & 0x80000000;
+    const w = neg ? Array.from(value, (x) => ~x >>> 0) : Array.from(value);
+    const n = w[0] + w[1] * 2 ** 32 + w[2] * 2 ** 64 + w[3] * 2 ** 96;
+    return neg ? -(n + 1) : n;
+  }
   if (value instanceof Date) return value.toISOString();
   return value;
 }
@@ -112,7 +124,7 @@ export function copyOut(sql, fileName) {
 
 export async function memoryUsage() {
   try {
-    return Number(await scalar('SELECT sum(memory_usage_bytes) FROM duckdb_memory()')) || 0;
+    return Number(await scalar('SELECT sum(memory_usage_bytes)::DOUBLE FROM duckdb_memory()')) || 0;
   } catch {
     return 0;
   }

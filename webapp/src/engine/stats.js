@@ -16,10 +16,10 @@ const check = (isStale) => { if (isStale?.()) throw new StaleError(); };
 const v = (metric) => `TRY_CAST(${qi(metric)} AS DOUBLE)`;
 
 export async function metricSummary(side, metric, where, quants = QUANTS) {
-  const [r] = await query(`SELECT count(x) AS count, avg(x) AS mean, stddev_samp(x) AS sd, min(x) AS min,
-      quantile_cont(x, 0.5) AS p50, quantile_cont(x, 0.9) AS p90, max(x) AS max,
-      quantile_cont(x, [${quants.join(',')}]) AS q
-    FROM (SELECT ${v(metric)} AS x FROM ${qi(side.table)} WHERE ${where}) WHERE x IS NOT NULL AND NOT isnan(x)`);
+  const [r] = await query(`SELECT count(__x) AS count, avg(__x) AS mean, stddev_samp(__x) AS sd, min(__x) AS min,
+      quantile_cont(__x, 0.5) AS p50, quantile_cont(__x, 0.9) AS p90, max(__x) AS max,
+      quantile_cont(__x, [${quants.join(',')}]) AS q
+    FROM (SELECT ${v(metric)} AS __x FROM ${qi(side.table)} WHERE ${where}) WHERE __x IS NOT NULL AND NOT isnan(__x)`);
   const q = r.q ? Array.from(r.q) : [];
   return { count: r.count, mean: r.mean, sd: r.sd, min: r.min, p50: r.p50, p90: r.p90, max: r.max, cdf: q.length ? { x: q, y: quants.map((p) => p * 100) } : null };
 }
@@ -28,23 +28,23 @@ export async function sequencePoints(side, metric, where, count) {
   const stride = Math.max(1, Math.ceil(Math.max(count, 1) / MAX_CHART_POINTS));
   const hasTti = side.columns.includes('tti');
   const xExpr = hasTti ? `TRY_CAST("tti" AS DOUBLE)` : '__source_row';
-  const rows = await query(`WITH o AS (
-      SELECT ${xExpr} AS x, ${v(metric)} AS y, ROW_NUMBER() OVER (ORDER BY ${xExpr}, __source_row) AS k
+  const rows = await query(`WITH __o AS (
+      SELECT ${xExpr} AS __x, ${v(metric)} AS __y, ROW_NUMBER() OVER (ORDER BY ${xExpr}, __source_row) AS __k
       FROM ${qi(side.table)} WHERE ${where} AND ${v(metric)} IS NOT NULL AND ${xExpr} IS NOT NULL)
-    SELECT x, y FROM o WHERE ((k - 1) % ${stride}) = 0 ORDER BY k LIMIT ${MAX_CHART_POINTS}`);
-  return { x: rows.map((r) => r.x), y: rows.map((r) => r.y), xTitle: hasTti ? 'TTI' : '行序号', stride };
+    SELECT __x, __y FROM __o WHERE ((__k - 1) % ${stride}) = 0 ORDER BY __k LIMIT ${MAX_CHART_POINTS}`);
+  return { x: rows.map((r) => r.__x), y: rows.map((r) => r.__y), xTitle: hasTti ? 'TTI' : '行序号', stride };
 }
 
 /** 类别频次：取前 limit 类，分母用该范围的总行数（不是前几类之和），其余合并为“其他”。 */
 export async function categoryCounts(side, column, where, limit = 24) {
   const id = qi(column);
   const label = `CASE WHEN ${id} IS NULL OR TRIM(CAST(${id} AS VARCHAR)) = '' OR LOWER(CAST(${id} AS VARCHAR)) = 'nan' THEN 'NaN' ELSE CAST(${id} AS VARCHAR) END`;
-  const rows = await query(`SELECT ${label} AS value, count(*) AS n FROM ${qi(side.table)} WHERE ${where} GROUP BY value ORDER BY n DESC, value LIMIT ${limit + 1}`);
-  const [{ total }] = await query(`SELECT count(*) AS total FROM ${qi(side.table)} WHERE ${where}`);
+  const rows = await query(`SELECT ${label} AS __value, count(*) AS __n FROM ${qi(side.table)} WHERE ${where} GROUP BY __value ORDER BY __n DESC, __value LIMIT ${limit + 1}`);
+  const [{ __total: total }] = await query(`SELECT count(*) AS __total FROM ${qi(side.table)} WHERE ${where}`);
   const top = rows.slice(0, limit);
-  const shown = top.reduce((s, r) => s + r.n, 0);
-  const values = top.map((r) => r.value);
-  const counts = top.map((r) => r.n);
+  const shown = top.reduce((s, r) => s + r.__n, 0);
+  const values = top.map((r) => r.__value);
+  const counts = top.map((r) => r.__n);
   if (total > shown) { values.push('其他'); counts.push(total - shown); }
   return { values, counts, total };
 }
@@ -52,24 +52,24 @@ export async function categoryCounts(side, column, where, limit = 24) {
 /** BLER：剔除 ack0 不为 0/1 的 DTX 后，BLER = 1 - mean(ack0)。按用户分组。 */
 export async function blerByUser(side, where) {
   if (!side.columns.includes('714_ack0')) return null;
-  const user = side.columns.includes('ambr') ? 'CAST(ambr AS VARCHAR)' : `'小区'`;
-  const rows = await query(`SELECT ${user} AS u, count(*) FILTER (WHERE ack IN (0,1)) AS valid, count(*) FILTER (WHERE ack IS NOT NULL AND ack NOT IN (0,1)) AS dtx,
-      1.0 - avg(ack) FILTER (WHERE ack IN (0,1)) AS bler
-    FROM (SELECT *, TRY_CAST("714_ack0" AS DOUBLE) AS ack FROM ${qi(side.table)} WHERE ${where}) GROUP BY u ORDER BY valid DESC`);
-  return rows.filter((r) => r.bler != null).map((r) => ({ user: r.u, valid: r.valid, dtx: r.dtx, bler: r.bler * 100 }));
+  const user = side.columns.includes('ambr') ? 'CAST("ambr" AS VARCHAR)' : `'小区'`;
+  const rows = await query(`SELECT __u, count(*) FILTER (WHERE __ack IN (0,1)) AS __valid, count(*) FILTER (WHERE __ack IS NOT NULL AND __ack NOT IN (0,1)) AS __dtx,
+      1.0 - avg(__ack) FILTER (WHERE __ack IN (0,1)) AS __bler
+    FROM (SELECT ${user} AS __u, TRY_CAST("714_ack0" AS DOUBLE) AS __ack FROM ${qi(side.table)} WHERE ${where}) GROUP BY __u ORDER BY __valid DESC`);
+  return rows.filter((r) => r.__bler != null).map((r) => ({ user: r.__u, valid: r.__valid, dtx: r.__dtx, bler: r.__bler * 100 }));
 }
 
 /** 按用户一次性算出伴随指标，供“最值得看的用户”表使用。 */
 export async function userBreakdown(side, where) {
   const has = (c) => side.columns.includes(c);
   if (!has('ambr')) return [];
-  const sel = ['CAST(ambr AS VARCHAR) AS u', 'count(*) AS n'];
-  if (has('cw0SuMcs')) sel.push(`avg(${v('cw0SuMcs')}) AS mcs`, `quantile_cont(${v('cw0SuMcs')}, 0.5) AS mcs_p50`);
-  if (has('schRank')) sel.push(`avg(CASE WHEN ${v('schRank')} = 2 THEN 1.0 WHEN ${v('schRank')} IS NOT NULL THEN 0.0 END) AS rank2`);
-  if (has('usrschpdschDrbData')) sel.push(`avg(CASE WHEN ${v('usrschpdschDrbData')} > 0 AND ${v('usrschpdschDrbData')} < ${TRUNCATED_LIMIT} THEN 1.0 WHEN ${v('usrschpdschDrbData')} IS NOT NULL THEN 0.0 END) AS trunc`);
-  if (has('714_ack0')) sel.push(`1.0 - avg(${v('714_ack0')}) FILTER (WHERE ${v('714_ack0')} IN (0,1)) AS bler`);
-  if (has('714_compOlla_scaled')) sel.push(`avg(${v('714_compOlla_scaled')}) AS olla`);
-  return query(`SELECT ${sel.join(', ')} FROM ${qi(side.table)} WHERE ${where} AND ambr IS NOT NULL GROUP BY u`);
+  const sel = ['CAST("ambr" AS VARCHAR) AS __u', 'count(*) AS __n'];
+  if (has('cw0SuMcs')) sel.push(`avg(${v('cw0SuMcs')}) AS __mcs`, `quantile_cont(${v('cw0SuMcs')}, 0.5) AS __mcs_p50`);
+  if (has('schRank')) sel.push(`avg(CASE WHEN ${v('schRank')} = 2 THEN 1.0 WHEN ${v('schRank')} IS NOT NULL THEN 0.0 END) AS __rank2`);
+  if (has('usrschpdschDrbData')) sel.push(`avg(CASE WHEN ${v('usrschpdschDrbData')} > 0 AND ${v('usrschpdschDrbData')} < ${TRUNCATED_LIMIT} THEN 1.0 WHEN ${v('usrschpdschDrbData')} IS NOT NULL THEN 0.0 END) AS __trunc`);
+  if (has('714_ack0')) sel.push(`1.0 - avg(${v('714_ack0')}) FILTER (WHERE ${v('714_ack0')} IN (0,1)) AS __bler`);
+  if (has('714_compOlla_scaled')) sel.push(`avg(${v('714_compOlla_scaled')}) AS __olla`);
+  return query(`SELECT ${sel.join(', ')} FROM ${qi(side.table)} WHERE ${where} AND "ambr" IS NOT NULL GROUP BY __u`);
 }
 
 // ---------- 结论卡片 ----------
@@ -91,11 +91,11 @@ async function cardSide(side, def, where) {
     return { value: s.mean, n: s.count, sd: s.sd, cdf: s.cdf };
   }
   if (def.kind === 'bler') {
-    const [r] = await query(`SELECT count(*) FILTER (WHERE ${x} IN (0,1)) AS n, 1.0 - avg(${x}) FILTER (WHERE ${x} IN (0,1)) AS p FROM ${qi(side.table)} WHERE ${where}`);
-    return { value: r.p == null ? null : r.p * 100, n: r.n, p: r.p };
+    const [r] = await query(`SELECT count(*) FILTER (WHERE ${x} IN (0,1)) AS __n, 1.0 - avg(${x}) FILTER (WHERE ${x} IN (0,1)) AS __p FROM ${qi(side.table)} WHERE ${where}`);
+    return { value: r.__p == null ? null : r.__p * 100, n: r.__n, p: r.__p };
   }
-  const [r] = await query(`SELECT count(${x}) AS n, avg(CASE WHEN ${def.test(x)} THEN 1.0 WHEN ${x} IS NOT NULL THEN 0.0 END) AS p FROM ${qi(side.table)} WHERE ${where}`);
-  return { value: r.p == null ? null : r.p * 100, n: r.n, p: r.p };
+  const [r] = await query(`SELECT count(${x}) AS __n, avg(CASE WHEN ${def.test(x)} THEN 1.0 WHEN ${x} IS NOT NULL THEN 0.0 END) AS __p FROM ${qi(side.table)} WHERE ${where}`);
+  return { value: r.__p == null ? null : r.__p * 100, n: r.__n, p: r.__p };
 }
 
 /**
@@ -139,8 +139,8 @@ export async function matchStats(sides, filters, search) {
   for (const k of ['A', 'B']) {
     const s = sides[k];
     if (!s) continue;
-    const [r] = await query(`SELECT count(*) AS n, count(*) FILTER (WHERE "714_匹配状态" = '已匹配') AS m FROM ${qi(s.table)} WHERE ${filterSql(filters, s.columns, search)}`);
-    out[k] = { n: r.n, matched: r.m, rate: r.n ? (r.m / r.n) * 100 : null };
+    const [r] = await query(`SELECT count(*) AS __n, count(*) FILTER (WHERE "714_匹配状态" = '已匹配') AS __m FROM ${qi(s.table)} WHERE ${filterSql(filters, s.columns, search)}`);
+    out[k] = { n: r.__n, matched: r.__m, rate: r.__n ? (r.__m / r.__n) * 100 : null };
   }
   return out;
 }

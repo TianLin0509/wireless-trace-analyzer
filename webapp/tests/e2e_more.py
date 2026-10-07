@@ -14,7 +14,7 @@ def pick(pg, i, d):
 
 
 def ready(pg):
-    pg.wait_for_function("() => /已就绪|失败/.test(document.querySelector('.prog')?.textContent || '')", timeout=300000)
+    pg.wait_for_function("() => /已就绪|失败|部分完成|已停止/.test(document.querySelector('.prog')?.textContent || '')", timeout=300000)
 
 
 ZOOM_JS = """() => {
@@ -106,3 +106,22 @@ with sync_playwright() as p:
     log["errors"] = errs[:10]
     print(json.dumps(log, ensure_ascii=False, indent=1))
     b.close()
+    checks = {
+        "批量 KPI 有结果": log["kpi_rows"] >= 1,
+        "深挖预选了用户": len(log["dive_users"]) >= 1,
+        "714 连接键列已输出": log["has_714_keys"],
+        "改字段后重新合并生效": log["after_remerge_has_band"] is False,
+        "重新合并保留用户范围": log["dive_users_kept"] == len(log["dive_users"]),
+        "取值筛选生效": log["filters"] == [{"column": "schType", "op": "in", "value": ["DL"]}],
+        "导出行数与页面一致": f"筛选后 {log['export']['lines']:,} " in log["pager"],
+        "恢复默认会按默认字段重新合并": log["after_default"] == {"filters": 0, "has_band": True},
+        "应用视图恢复字段与筛选": log["after_apply"] == {"filters": 1, "has_band": False, "name": "只看DL-测试"},
+        "缩放带入明细": bool(log["zoom_filter"]) and log["zoom_filter"]["op"] == "between" and log["zoom_tab"] == "tbl",
+        "单方案可分析": "已就绪" in log["single_status"],
+        "换数据清空用户范围": log["single_users_reset"] == 0,
+        "无残留临时表": log["tables_left"] == ["merged_a"],
+        "页面无报错": not log["errors"],
+    }
+    failed = [k for k, ok in checks.items() if not ok]
+    assert not failed, f"未通过：{failed}"
+    print(f"PASS e2e_more（{len(checks)} 项）")

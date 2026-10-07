@@ -21,19 +21,24 @@ export async function mergeSide(side, src537, src714, fallback714 = null) {
   let duplicateKeys = 0;
   const partition = KEYS.join(', ');
   if (src714) {
-    const linkSelect = [...KEYS.map((k) => `l.${k}`), 'l.__source_row', ...cols714.map((c) => `l.${qi(c)} AS ${qi('714_' + c)}`)];
     const out714 = cols714.map((c) => `link.${qi('714_' + c)}`);
+    // 先在只有“连接键 + 行号”的窄表上排序去重，再按行号取回所需列，避免窗口函数拖着整张宽表
     await exec(`
       CREATE TABLE ${qi(table)} AS
       WITH anchor AS (SELECT ${anchorSelect.join(', ')} FROM ${qi(src537.table)} a),
-      link_ranked AS (
-        SELECT ${linkSelect.join(', ')},
+      link_keys AS (
+        SELECT ${KEYS.map((k) => `l.${k}`).join(', ')}, l.__source_row AS __src,
           COUNT(*) OVER (PARTITION BY ${partition}) AS __candidate_rows,
           ROW_NUMBER() OVER (PARTITION BY ${partition} ORDER BY l.__source_row) AS __rank
         FROM ${qi(src714.table)} l
         WHERE ${KEYS.map((k) => `l.${k} IS NOT NULL`).join(' AND ')}
       ),
-      link AS (SELECT * FROM link_ranked WHERE __rank = 1)
+      link AS (
+        SELECT ${KEYS.map((k) => `lk.${k}`).join(', ')}, lk.__candidate_rows, l.__source_row,
+          ${cols714.map((c) => `l.${qi(c)} AS ${qi('714_' + c)}`).concat(['NULL AS __pad']).join(', ')}
+        FROM link_keys lk JOIN ${qi(src714.table)} l ON l.__source_row = lk.__src
+        WHERE lk.__rank = 1
+      )
       SELECT anchor.*,
         CASE WHEN link.__source_row IS NULL THEN 'NaN' ELSE '已匹配' END AS "714_匹配状态",
         COALESCE(link.__candidate_rows, 0) AS "714_候选行数",

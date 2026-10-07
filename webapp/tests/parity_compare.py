@@ -33,6 +33,11 @@ for s in old["merge"]:
             cmp(f"metric.{s}.{m}.{k}", v, new["metrics"][s][m][k])
     for u, v in old["bler"][s].items():
         cmp(f"bler.{s}.{u}", v, new["bler"][s].get(u))
+for u in new["t396"]["users"]:
+    if u not in old["t396"]["users"]:
+        bad.append((f"t396.extra_user {u}", None, new["t396"]["users"][u]))
+if n < 80:
+    bad.append(("比对项过少", n, ">=80"))
 print(f"对比 {n} 项，不一致 {len(bad)} 项")
 for x in bad[:30]:
     print("  ", x)

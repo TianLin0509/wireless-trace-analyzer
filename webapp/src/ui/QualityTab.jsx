@@ -9,6 +9,7 @@ export function QualityTab() {
   const r = S.run.value;
   const list = ['A396', 'A537', 'A714', 'B396', 'B537', 'B714'].map((k) => src[k]).filter(Boolean);
   const rejected = list.reduce((n, s) => n + (s.quality?.rejectedRows || 0), 0);
+  const nonNum = list.filter((s) => s.quality?.nonNumericCells);
   return (
     <div>
       {r?.errors?.length > 0 && (
@@ -21,6 +22,16 @@ export function QualityTab() {
         <div class="banner warn">
           <span>共 {fmtInt(rejected)} 行因格式问题（字段数不符、引号不闭合等）未读入，明细见下表“坏行样例”。其余数据照常分析。</span>
           <span class="sp" />{!S.qualityAck.value && <button class="btn small" onClick={() => (S.qualityAck.value = true)}>知道了</button>}
+        </div>
+      )}
+      {nonNum.length > 0 && (
+        <div class="banner info" style="display:block">
+          <b>数值列里有非数字文本，已按空值（NaN）处理：</b>
+          <ul style="margin:4px 0 0">
+            {nonNum.map((s) => (
+              <li>{s.key}：{fmtInt(s.quality.nonNumericCells)} 个单元格，涉及 {fmtInt(s.quality.nonNumericRows)} 行{s.quality.nonNumericSample?.length ? `（如第 ${s.quality.nonNumericSample.slice(0, 5).join('、')} 条数据）` : ''}{s.quality.nonNumericColumns?.length ? `；列 ${s.quality.nonNumericColumns.join('、')}` : ''}</li>
+            ))}
+          </ul>
         </div>
       )}
       <div class="kgrid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">

@@ -43,7 +43,7 @@ with sync_playwright() as p:
     pg.get_by_role("button", name="开始分析").click()
     pg.wait_for_selector(".urow .id", timeout=120000)
     t396 = time.time() - t0
-    pg.wait_for_function("() => /已就绪|失败/.test(document.querySelector('.prog')?.textContent || '')", timeout=1200000)
+    pg.wait_for_function("() => /已就绪|失败|部分完成|已停止/.test(document.querySelector('.prog')?.textContent || '')", timeout=1200000)
     t_ready = time.time() - t0
     pg.wait_for_function("() => document.querySelectorAll('.kcard').length >= 6", timeout=120000)
     t_cards = time.time() - t0
@@ -63,4 +63,6 @@ with sync_playwright() as p:
                       "table_first_page": round(t_table, 2), "filter_one_user": round(t_filter, 2), "charts_4_metrics": round(t_chart, 1),
                       "browser_mem_peak_mb": round(peak["mem"] / 2**20), "browser_mem_before_mb": round(base / 2**20),
                       "status": pg.inner_text(".prog"), "errors": errs[:5]}, ensure_ascii=False))
+    status = pg.inner_text(".prog")
     b.close()
+    assert "已就绪" in status and not errs, f"压力测试未完整成功：{status} {errs[:3]}"

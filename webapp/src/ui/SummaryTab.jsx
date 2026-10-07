@@ -123,7 +123,7 @@ function ImpactTable() {
       const s = sides[k];
       if (!s || isStale()) continue;
       const rows = await userBreakdown(s, filterSql(tableFilters, s.columns, v.search));
-      out[k] = new Map(rows.map((r) => [String(r.u), r]));
+      out[k] = new Map(rows.map((r) => [String(r.__u), r]));
     }
     return out;
   }, [S.dataVersion.value, JSON.stringify(tableFilters), v.search, ready]);
@@ -135,10 +135,10 @@ function ImpactTable() {
     const a = bd.A.get(u), b = bd.B.get(u);
     if (!a || !b) return '';
     const parts = [];
-    if (a.bler != null && b.bler != null && Math.abs(b.bler - a.bler) * 100 >= 1) parts.push(`BLER ${fmt(a.bler * 100, 1)}%→${fmt(b.bler * 100, 1)}%`);
-    if (a.mcs != null && b.mcs != null && Math.abs(b.mcs - a.mcs) >= 0.5) parts.push(`MCS 均值 ${fmtDelta(b.mcs - a.mcs, 1)}`);
-    if (a.rank2 != null && b.rank2 != null && Math.abs(b.rank2 - a.rank2) * 100 >= 3) parts.push(`Rank2 ${fmt(a.rank2 * 100, 0)}%→${fmt(b.rank2 * 100, 0)}%`);
-    if (a.trunc != null && b.trunc != null && Math.abs(b.trunc - a.trunc) * 100 >= 1) parts.push(`截包 ${fmt(a.trunc * 100, 1)}%→${fmt(b.trunc * 100, 1)}%`);
+    if (a.__bler != null && b.__bler != null && Math.abs(b.__bler - a.__bler) * 100 >= 1) parts.push(`BLER ${fmt(a.__bler * 100, 1)}%→${fmt(b.__bler * 100, 1)}%`);
+    if (a.__mcs != null && b.__mcs != null && Math.abs(b.__mcs - a.__mcs) >= 0.5) parts.push(`MCS 均值 ${fmtDelta(b.__mcs - a.__mcs, 1)}`);
+    if (a.__rank2 != null && b.__rank2 != null && Math.abs(b.__rank2 - a.__rank2) * 100 >= 3) parts.push(`Rank2 ${fmt(a.__rank2 * 100, 0)}%→${fmt(b.__rank2 * 100, 0)}%`);
+    if (a.__trunc != null && b.__trunc != null && Math.abs(b.__trunc - a.__trunc) * 100 >= 1) parts.push(`截包 ${fmt(a.__trunc * 100, 1)}%→${fmt(b.__trunc * 100, 1)}%`);
     return parts.join('，') || '无明显伴随变化';
   };
   const focus = (u, chart) => {

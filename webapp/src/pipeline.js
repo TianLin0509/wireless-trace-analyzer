@@ -75,9 +75,10 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
   }
   add('A537', '方案 A · T537 调度', 3, files.A537);
   add('A714', '方案 A · T714 链路', 1.5, files.A537 && files.A714);
+  add('mergeA', '方案 A · 合并 537 ⟵ 714', 0.4, files.A537 ? {} : null);
   add('B537', '方案 B · T537 调度', 3, files.B537);
   add('B714', '方案 B · T714 链路', 1.5, files.B537 && files.B714);
-  add('merge', '合并 537 ⟵ 714', 0.6, files.A537 || files.B537 ? {} : null);
+  add('mergeB', '方案 B · 合并 537 ⟵ 714', 0.4, files.B537 ? {} : null);
   const startedAt = Date.now();
   const alive = () => myRun === runSeq;
   const guard = () => { if (!alive()) throw new Cancelled(); };
@@ -142,49 +143,69 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
       if (agg.A || agg.B) S.t396.value = compareT396(agg.A || [], agg.B || []);
     }
 
-    // 2) 537 / 714 只读需要的列
-    const tables = {};
+    // 2) 预检全部 537/714（只读文件头，毫秒级）。一侧缺 714 时，用另一侧 714 的字段补出同名空列，保证 A/B 列集合一致
+    const wantedFor = (id) => (id === '537' ? [...new Set([...KEYS_537, ...fields.columns537])] : [...new Set([...KEYS_714, ...fields.columns714])]);
+    const pre = {};
     for (const side of ['A', 'B']) {
+      for (const id of ['537', '714']) {
+        const f = files[`${side}${id}`];
+        if (!f) continue;
+        try {
+          const file = await getFile(f);
+          pre[`${side}${id}`] = { file, sniff: await sniffFile(file) };
+        } catch (err) {
+          errors.push(`${side}${id}：${err.message || err}`);
+        }
+      }
+    }
+    const fallback714 = (side) => {
+      const p714 = pre[`${side}714`];
+      if (!p714) return null;
+      const cols = new Set(p714.sniff.columns);
+      const selected = wantedFor('714').filter((c) => cols.has(c));
+      return { selected, numericColumns: selected.filter((c) => p714.sniff.numericColumns.includes(c)) };
+    };
+
+    // 3) 逐侧“读入 → 合并 → 释放原表”，同一时刻最多只有一侧的原表在内存里
+    const merged = { A: null, B: null };
+    for (const side of ['A', 'B']) {
+      const t = {};
       for (const id of ['537', '714']) {
         const key = `${side}${id}`;
         const f = files[key];
-        if (!f || (id === '714' && !files[`${side}537`])) continue;
-        if (id === '714' && !tables[`${side}537`]) { setStep(key, { state: 'skip' }); continue; }
+        if (!f || !pre[key]) continue;
+        if (id === '714' && !t['537']) { setStep(key, { state: 'skip' }); continue; }
         try {
-          const file = await getFile(f);
-          const sniff = await sniffFile(file);
-          const wanted = id === '537' ? [...new Set([...KEYS_537, ...fields.columns537])] : [...new Set([...KEYS_714, ...fields.columns714])];
-          const res = await timed(key, file.size, () => ingestTable(key, file, id, wanted, sniff));
-          tables[key] = res;
+          const { file, sniff } = pre[key];
+          const res = await timed(key, file.size, () => ingestTable(key, file, id, wantedFor(id), sniff));
+          t[id] = res;
           record(key, { key, trace: id, side, name: f.name, relPath: f.relPath, size: file.size, rows: res.rows, columns: res.columns, selected: res.selected, numericColumns: res.numericColumns, quality: res.quality, ignored: (sel[side]?.traces[id]?.candidates.length || 1) - 1 });
         } catch (err) {
           errors.push(`${key}：${err.message || err}`);
         }
         guard();
       }
-    }
-
-    // 3) 合并后立即释放原表，节省浏览器内存
-    const merged = { A: null, B: null };
-    if (tables.A537 || tables.B537) {
-      await timed('merge', 0, async () => {
-        for (const side of ['A', 'B']) {
-          guard();
-          if (!tables[`${side}537`]) continue;
-          const other = side === 'A' ? 'B' : 'A';
-          merged[side] = await mergeSide(side, tables[`${side}537`], tables[`${side}714`] || null, tables[`${other}714`] || null);
-          await dropTable(`src_${side}537`);
-          await dropTable(`src_${side}714`);
+      if (t['537']) {
+        try {
+          merged[side] = await timed(`merge${side}`, 0, () => mergeSide(side, t['537'], t['714'] || null, t['714'] ? null : fallback714(side === 'A' ? 'B' : 'A')));
+        } catch (err) {
+          errors.push(`合并方案 ${side}：${err.message || err}`);
         }
-      });
+      } else if (files[`${side}537`]) {
+        setStep(`merge${side}`, { state: 'skip' });
+      }
+      await dropTable(`src_${side}537`);
+      await dropTable(`src_${side}714`);
+      guard();
     }
-    guard();
     const mem = await memoryUsage();
+    guard(); // 等内存统计的这段时间里也可能被取消
+    const failedSides = ['A', 'B'].filter((k) => files[`${k}537`] && !merged[k]);
     signalBatch(() => {
       S.sides.value = merged;
       S.loadedFields.value = fields;
       S.dataVersion.value++;
-      S.run.value = { ...S.run.value, status: errors.length ? 'partial' : 'done', errors, finishedAt: Date.now(), memory: mem, seconds: (Date.now() - startedAt) / 1000 };
+      S.run.value = { ...S.run.value, status: errors.length ? 'partial' : 'done', errors, failedSides, finishedAt: Date.now(), memory: mem, seconds: (Date.now() - startedAt) / 1000 };
       if (!merged[S.tableSide.value]) S.tableSide.value = merged.A ? 'A' : 'B';
     });
     if (!tablesOnly) await rememberRecent();

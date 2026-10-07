@@ -36,7 +36,7 @@ export function ChartsTab() {
   const scopes = users.length ? users.slice(0, MAX_CHART_USERS).map((u) => ({ key: u, label: `ambr ${u}`, users: [u] })) : [{ key: '__cell__', label: '小区全量', users: null }];
 
   const data = useAsync(async (isStale) => {
-    if (!metrics.length) return null;
+    if (!metrics.length) { setBusy(null); return null; }
     setBusy({ p: 0, text: '准备中' });
     try {
       const res = await chartData(sides, { metrics, filters, search: v.search, scopes, isStale, onProgress: (p, text) => !isStale() && setBusy({ p, text }) });

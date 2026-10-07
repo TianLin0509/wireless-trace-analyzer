@@ -29,6 +29,7 @@ export function Workspace() {
             <QualityBadge />
           </div>
           <div class="content" id="content">
+            <PartialBanner />
             {tab === 'sum' && <SummaryTab />}
             {tab === 'tbl' && (ready ? <DetailTab /> : <Waiting what="明细" />)}
             {tab === 'cht' && (ready ? <ChartsTab /> : <Waiting what="图表" />)}
@@ -44,6 +45,18 @@ export function Waiting({ what }) {
   const r = S.run.value;
   if (r?.status === 'running') return <div class="empty">正在读取与合并数据，完成后自动显示{what}。<br /><span class="faint">T396 速率已在左侧先出结果。</span></div>;
   return <div class="empty">没有可用的合并数据。{r?.errors?.length ? '请到“数据质量”查看失败原因。' : ''}</div>;
+}
+
+function PartialBanner() {
+  const r = S.run.value;
+  if (!r || r.status !== 'partial' || S.tab.value === 'qa') return null;
+  const side = r.failedSides?.length ? `方案 ${r.failedSides.join('、')} 的 T537 没有读成功，下面只有另一侧的数据，A/B 对比不完整。` : '部分文件没有读成功，相关指标可能缺失。';
+  return (
+    <div class="banner warn">
+      <span>⚠ {side}</span><span class="sp" />
+      <button class="btn small" onClick={() => (S.tab.value = 'qa')}>查看原因</button>
+    </div>
+  );
 }
 
 function QualityBadge() {
@@ -70,6 +83,7 @@ function TopBar({ onToggleRail }) {
     : running ? `读取中 ${(p * 100).toFixed(0)}%`
       : r.status === 'error' ? '失败'
         : r.status === 'cancelled' ? '已停止'
+          : r.status === 'partial' ? `部分完成 · ${r.failedSides?.length ? `方案 ${r.failedSides.join('、')} 未读成功` : `${r.errors.length} 个文件有问题`}`
           : `已就绪 · ${[sides.A && `A ${sides.A.anchorRows.toLocaleString()}`, sides.B && `B ${sides.B.anchorRows.toLocaleString()}`].filter(Boolean).join(' / ')} 行`;
   const rerun = async () => {
     try { await startRun(); } catch (err) { S.showError('重新分析失败', err); }
@@ -89,7 +103,7 @@ function TopBar({ onToggleRail }) {
       <button class="btn" onClick={() => { cancelRun(); S.page.value = 'start'; }}>更换数据</button>
       <span class="sp" />
       <div style="position:relative">
-        <span class={'prog ' + (running ? 'running' : r?.status === 'error' ? 'error' : '')} onClick={() => setShowSteps(!showSteps)}>
+        <span class={'prog ' + (running ? 'running' : r?.status === 'error' ? 'error' : r?.status === 'partial' ? 'partial' : '')} onClick={() => setShowSteps(!showSteps)}>
           <i />{statusText}<span class="bar"><s style={{ width: `${(running ? p : 1) * 100}%` }} /></span>
         </span>
         {showSteps && r && (

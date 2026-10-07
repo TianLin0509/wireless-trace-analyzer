@@ -60,6 +60,8 @@ select.input { padding: 4px 8px; }
 .prog i { width: 8px; height: 8px; border-radius: 50%; background: #16a34a; display: block; }
 .prog.running i { background: #f59e0b; animation: pulse 1s infinite; }
 .prog.error i { background: #dc2626; }
+.prog.partial { border-color: #f1d7a4; background: #fffaf0; color: #7a4a00; }
+.prog.partial i { background: #f59e0b; }
 .prog .bar { width: 70px; height: 4px; border-radius: 4px; background: #e5e7eb; overflow: hidden; }
 .prog .bar s { display: block; height: 100%; background: var(--brand); transition: width .3s; }
 @keyframes pulse { 50% { opacity: .35; } }

@@ -1,0 +1,57 @@
+name: webapp
+
+# 网页版的自动回归：单元测试 + 构建 + 真实浏览器端到端 + 与旧版 Python 引擎的口径对照。
+on:
+  push:
+    branches: [main]
+    paths: ["webapp/**", "wireless_trace_viewer_app/**", ".github/workflows/webapp.yml"]
+  pull_request:
+    paths: ["webapp/**", "wireless_trace_viewer_app/**", ".github/workflows/webapp.yml"]
+
+jobs:
+  webapp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install
+        run: |
+          npm ci
+          python -m pip install -r ../requirements.txt playwright psutil
+          python -m playwright install --with-deps chromium
+      - name: Unit tests
+        run: npx vitest run
+      - name: Build
+        run: npm run build
+      - name: Test data
+        run: |
+          python tools/gen_sample_data.py output/data/sample --rows 20000
+          python tools/make_dirty.py output/data/sample output/data/dirty
+      - name: End-to-end and parity
+        run: |
+          mkdir -p output/e2e
+          python tools/serve_dist.py 5318 &
+          sleep 2
+          python tests/e2e_flow.py http://127.0.0.1:5318/ output/data/sample/方案A output/data/sample/方案B output/e2e
+          python tests/e2e_more.py http://127.0.0.1:5318/ output/data/sample/方案A output/data/sample/方案B output/e2e
+          python tests/dirty_check.py http://127.0.0.1:5318/ output/data/dirty output/e2e
+          python tests/parity_old.py .. output/data/sample/方案A output/data/sample/方案B Cell_1 output/parity-old.json
+          python tests/parity_web.py http://127.0.0.1:5318/ output/data/sample/方案A output/data/sample/方案B Cell_1 output/parity-web.json
+          python tests/parity_compare.py output/parity-old.json output/parity-web.json
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webapp-e2e
+          path: webapp/output/e2e
