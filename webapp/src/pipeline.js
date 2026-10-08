@@ -59,7 +59,8 @@ export function runProgress() {
 
 async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
   if (myRun !== runSeq) return; // 排队期间又有更新的任务
-  const sel = S.selection.value;
+  // 单小区模式只分析 A 侧；从 A/B 模式切过来时残留的 B 选择不参与
+  const sel = S.mode.value === 'single' ? { A: S.selection.value.A, B: null } : S.selection.value;
   const files = sourceFiles(sel);
   if (!files.A537 && !files.B537 && !files.A396 && !files.B396) throw new Error('所选批次里没有 T396 / T537 文件。');
   if (sel.A && sel.B && files.A537 && files.B537 && files.A537.physicalKey === files.B537.physicalKey) {
@@ -70,15 +71,17 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
   const steps = [];
   const add = (id, label, weight, file) => steps.push({ id, label, weight, file, state: file ? 'wait' : 'skip', pct: 0 });
   if (!tablesOnly) {
-    add('A396', '方案 A · T396 速率', 0.4, files.A396);
-    add('B396', '方案 B · T396 速率', 0.4, files.B396);
+    add('A396', `${S.sideLabel('A')} · T396 速率`, 0.4, files.A396);
+    if (files.B396) add('B396', `${S.sideLabel('B')} · T396 速率`, 0.4, files.B396);
   }
-  add('A537', '方案 A · T537 调度', 3, files.A537);
-  add('A714', '方案 A · T714 链路', 1.5, files.A537 && files.A714);
-  add('mergeA', '方案 A · 合并 537 ⟵ 714', 0.4, files.A537 ? {} : null);
-  add('B537', '方案 B · T537 调度', 3, files.B537);
-  add('B714', '方案 B · T714 链路', 1.5, files.B537 && files.B714);
-  add('mergeB', '方案 B · 合并 537 ⟵ 714', 0.4, files.B537 ? {} : null);
+  add('A537', `${S.sideLabel('A')} · T537 调度`, 3, files.A537);
+  add('A714', `${S.sideLabel('A')} · T714 链路`, 1.5, files.A537 && files.A714);
+  add('mergeA', `${S.sideLabel('A')} · 合并 537 ⟵ 714`, 0.4, files.A537 ? {} : null);
+  if (sel.B) {
+    add('B537', `${S.sideLabel('B')} · T537 调度`, 3, files.B537);
+    add('B714', `${S.sideLabel('B')} · T714 链路`, 1.5, files.B537 && files.B714);
+    add('mergeB', `${S.sideLabel('B')} · 合并 537 ⟵ 714`, 0.4, files.B537 ? {} : null);
+  }
   const startedAt = Date.now();
   const alive = () => myRun === runSeq;
   const guard = () => { if (!alive()) throw new Cancelled(); };
@@ -240,15 +243,17 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
 }
 
 async function rememberRecent() {
-  const sel = S.selection.value;
+  const single = S.mode.value === 'single';
+  const sel = single ? { A: S.selection.value.A, B: null } : S.selection.value;
   const v = S.view.value;
   const entry = {
-    signature: ['A', 'B'].map((s) => `${S.dirs[s].value?.rootName || ''}|${sel[s]?.batchId || ''}`).join('||'),
-    label: `${sel.A ? batchLabel(sel.A) : '—'}  vs  ${sel.B ? batchLabel(sel.B) : '—'}`,
+    signature: `${single ? 'single' : 'ab'}::` + ['A', 'B'].map((s) => `${S.dirs[s].value?.rootName || ''}|${sel[s]?.batchId || ''}`).join('||'),
+    label: single ? (sel.A ? batchLabel(sel.A) : '—') : `${sel.A ? batchLabel(sel.A) : '—'}  vs  ${sel.B ? batchLabel(sel.B) : '—'}`,
+    mode: single ? 'single' : 'ab',
     roots: { A: S.dirs.A.value?.rootName || null, B: S.dirs.B.value?.rootName || null },
-    paths: { A: S.dirs.A.value?.fullPath || '', B: S.dirs.B.value?.fullPath || '' },
-    handles: { A: S.dirs.A.value?.handle || null, B: S.dirs.B.value?.handle || null },
-    via: { A: S.dirs.A.value?.via || null, B: S.dirs.B.value?.via || null },
+    paths: { A: S.dirs.A.value?.fullPath || '', B: single ? '' : S.dirs.B.value?.fullPath || '' },
+    handles: { A: S.dirs.A.value?.handle || null, B: single ? null : S.dirs.B.value?.handle || null },
+    via: { A: S.dirs.A.value?.via || null, B: single ? null : S.dirs.B.value?.via || null },
     batchIds: { A: sel.A?.batchId || null, B: sel.B?.batchId || null },
     viewId: v.id,
     viewName: v.name,

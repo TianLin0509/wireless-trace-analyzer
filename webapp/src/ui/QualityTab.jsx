@@ -38,7 +38,7 @@ export function QualityTab() {
       <div class="kgrid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
         {['A', 'B'].map((k) => sides[k] && (
           <div class="kcard" style="cursor:default">
-            <div class="nm"><span>方案 {k} · 714 匹配率</span></div>
+            <div class="nm"><span>{S.sideLabel(k)} · 714 匹配率</span></div>
             <div class="vals num"><span class={'big ' + k}>{fmt(sides[k].matchRate, 2)}%</span></div>
             <div class="foot">537 锚点 {fmtInt(sides[k].anchorRows)} 行 · 未匹配 {fmtInt(sides[k].nanRows)} · 714 重复连接键 {fmtInt(sides[k].duplicate714Keys)} 组{sides[k].has714 ? '' : ' · 无 714 文件'}</div>
           </div>

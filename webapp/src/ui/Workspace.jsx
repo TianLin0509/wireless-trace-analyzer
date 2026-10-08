@@ -8,12 +8,16 @@ import { SummaryTab } from './SummaryTab.jsx';
 import { DetailTab } from './DetailTab.jsx';
 import { ChartsTab } from './ChartsTab.jsx';
 import { QualityTab } from './QualityTab.jsx';
+import { SingleOverview } from './SingleOverview.jsx';
+import { UserTable } from './UserTable.jsx';
 import { ViewMenu } from './ViewMenu.jsx';
 import { fmtSec, fmtBytes } from './fmt.js';
 
 export function Workspace() {
   const [railOpen, setRailOpen] = useState(true);
-  const tab = S.tab.value;
+  const single = S.mode.value === 'single';
+  const tabs = single ? [['sum', '概览'], ['usr', '用户'], ['tbl', '明细'], ['cht', '图表'], ['qa', '数据质量']] : [['sum', '结论'], ['tbl', '明细'], ['cht', '图表'], ['qa', '数据质量']];
+  const tab = tabs.some(([k]) => k === S.tab.value) ? S.tab.value : 'sum';
   const ready = S.ready.value;
   return (
     <div class="work">
@@ -22,7 +26,7 @@ export function Workspace() {
         <UserRail />
         <section class="main">
           <div class="tabs">
-            {[['sum', '结论'], ['tbl', '明细'], ['cht', '图表'], ['qa', '数据质量']].map(([k, label]) => (
+            {tabs.map(([k, label]) => (
               <button class={tab === k ? 'on' : ''} onClick={() => (S.tab.value = k)}>{label}</button>
             ))}
             <span class="sp" />
@@ -30,7 +34,8 @@ export function Workspace() {
           </div>
           <div class="content" id="content">
             <PartialBanner />
-            {tab === 'sum' && <SummaryTab />}
+            {tab === 'sum' && (single ? (ready ? <SingleOverview /> : <Waiting what="概览" />) : <SummaryTab />)}
+            {tab === 'usr' && (ready ? <UserTable /> : <Waiting what="用户指标" />)}
             {tab === 'tbl' && (ready ? <DetailTab /> : <Waiting what="明细" />)}
             {tab === 'cht' && (ready ? <ChartsTab /> : <Waiting what="图表" />)}
             {tab === 'qa' && <QualityTab />}
@@ -50,7 +55,9 @@ export function Waiting({ what }) {
 function PartialBanner() {
   const r = S.run.value;
   if (!r || r.status !== 'partial' || S.tab.value === 'qa') return null;
-  const side = r.failedSides?.length ? `方案 ${r.failedSides.join('、')} 的 T537 没有读成功，下面只有另一侧的数据，A/B 对比不完整。` : '部分文件没有读成功，相关指标可能缺失。';
+  const side = r.failedSides?.length
+    ? (S.mode.value === 'single' ? 'T537 没有读成功，只有 T396 速率可看。' : `方案 ${r.failedSides.join('、')} 的 T537 没有读成功，下面只有另一侧的数据，A/B 对比不完整。`)
+    : '部分文件没有读成功，相关指标可能缺失。';
   return (
     <div class="banner warn">
       <span>⚠ {side}</span><span class="sp" />
@@ -68,6 +75,7 @@ function QualityBadge() {
 
 function TopBar({ onToggleRail }) {
   const sel = S.selection.value;
+  const single = S.mode.value === 'single';
   const [showSteps, setShowSteps] = useState(false);
   const r = S.run.value;
   const running = S.running.value;
@@ -83,7 +91,8 @@ function TopBar({ onToggleRail }) {
     : running ? `读取中 ${(p * 100).toFixed(0)}%`
       : r.status === 'error' ? '失败'
         : r.status === 'cancelled' ? '已停止'
-          : r.status === 'partial' ? `部分完成 · ${r.failedSides?.length ? `方案 ${r.failedSides.join('、')} 未读成功` : `${r.errors.length} 个文件有问题`}`
+          : r.status === 'partial' ? `部分完成 · ${r.failedSides?.length ? `${r.failedSides.map(S.sideLabel).join('、')} 未读成功` : `${r.errors.length} 个文件有问题`}`
+          : single ? `已就绪 · ${sides.A ? sides.A.anchorRows.toLocaleString() : 0} 行`
           : `已就绪 · ${[sides.A && `A ${sides.A.anchorRows.toLocaleString()}`, sides.B && `B ${sides.B.anchorRows.toLocaleString()}`].filter(Boolean).join(' / ')} 行`;
   const rerun = async () => {
     try { await startRun(); } catch (err) { S.showError('重新分析失败', err); }
@@ -96,10 +105,16 @@ function TopBar({ onToggleRail }) {
   return (
     <div class="top">
       <button class="btn icon" title="显示 / 隐藏用户栏" onClick={onToggleRail}>☰</button>
-      <div class="logo"><Logo /></div><span class="brand">Trace A/B</span>
-      <div class="srcchip" title={S.dirs.A.value?.fullPath || sel.A?.contextLabel || ''}><span class="k a">A</span><span class="tx">{sel.A ? batchLabel(sel.A) : '未选择'}</span></div>
-      <button class="btn icon" title="互换 A/B 并重新分析" disabled={running} onClick={swap}>⇄</button>
-      <div class="srcchip" title={S.dirs.B.value?.fullPath || sel.B?.contextLabel || ''}><span class="k b">B</span><span class="tx">{sel.B ? batchLabel(sel.B) : '未选择'}</span></div>
+      <div class="logo"><Logo /></div><span class="brand">{single ? '单小区分析' : 'Trace A/B'}</span>
+      {single ? (
+        <div class="srcchip" title={S.dirs.A.value?.fullPath || sel.A?.contextLabel || ''}><span class="tx">{sel.A ? batchLabel(sel.A) : '未选择'}</span></div>
+      ) : (
+        <>
+          <div class="srcchip" title={S.dirs.A.value?.fullPath || sel.A?.contextLabel || ''}><span class="k a">A</span><span class="tx">{sel.A ? batchLabel(sel.A) : '未选择'}</span></div>
+          <button class="btn icon" title="互换 A/B 并重新分析" disabled={running} onClick={swap}>⇄</button>
+          <div class="srcchip" title={S.dirs.B.value?.fullPath || sel.B?.contextLabel || ''}><span class="k b">B</span><span class="tx">{sel.B ? batchLabel(sel.B) : '未选择'}</span></div>
+        </>
+      )}
       <button class="btn" onClick={() => { cancelRun(); S.page.value = 'start'; }}>更换数据</button>
       <span class="sp" />
       <div style="position:relative">

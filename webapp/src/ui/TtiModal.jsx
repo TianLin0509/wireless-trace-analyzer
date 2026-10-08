@@ -11,7 +11,7 @@ export function TtiModal({ side, sideKey, tti, columns, onClose }) {
     <div class="modal-wrap" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div class="modal">
         <header>
-          <b>TTI {tti} · 方案 {sideKey}</b>
+          <b>TTI {tti} · {S.sideLabel(sideKey)}</b>
           {d && <span class="muted">共 {d.rows.length} 行 · {d.users.length} 个用户：{d.users.join('、')}</span>}
           <span class="sp" />
           <button class="btn" onClick={onClose}>关闭</button>

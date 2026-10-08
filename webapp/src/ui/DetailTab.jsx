@@ -88,9 +88,11 @@ export function DetailTab() {
   return (
     <div class={focus ? 'focus-mode' : ''}>
       <div class="tool">
-        <div class="seg">
-          {['A', 'B'].map((k) => <button class={sideKey === k ? 'on' : ''} disabled={!sides[k]} onClick={() => (S.tableSide.value = k)}>{k}</button>)}
-        </div>
+        {S.mode.value !== 'single' && (
+          <div class="seg">
+            {['A', 'B'].map((k) => <button class={sideKey === k ? 'on' : ''} disabled={!sides[k]} onClick={() => (S.tableSide.value = k)}>{k}</button>)}
+          </div>
+        )}
         <input class="input" style="width:200px" placeholder="搜索任意值…" value={searchText} onInput={(e) => setSearchText(e.target.value)} />
         {S.users.value.length > 0 && <span class="chip scope" title="来自左侧用户栏">ambr ∈ {S.users.value.slice(0, 4).join(',')}{S.users.value.length > 4 ? '…' : ''}<button onClick={() => (S.users.value = [])}>×</button></span>}
         {(v.filters || []).map((f, i) => <span class="chip">{describeFilter(f)}<button onClick={() => removeFilter(i)}>×</button></span>)}
@@ -149,7 +151,7 @@ export function DetailTab() {
       </div>
       {d && (
         <div class="pager">
-          <span>方案 {sideKey} · 筛选后 <b>{fmtInt(d.filtered)}</b> / {fmtInt(d.total)} 行 · 第 {d.page} / {d.totalPages} 页</span>
+          <span>{S.sideLabel(sideKey)} · 筛选后 <b>{fmtInt(d.filtered)}</b> / {fmtInt(d.total)} 行 · 第 {d.page} / {d.totalPages} 页</span>
           {res.loading && <span class="faint">刷新中…</span>}
           <span class="sp" />
           <select class="input" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>

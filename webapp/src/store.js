@@ -18,6 +18,16 @@ export const defaultView = () => ({
 });
 
 export const page = signal('start'); // start | work | kpi
+const MODE_KEY = 'trace-mode';
+const savedMode = () => { try { return localStorage.getItem(MODE_KEY) === 'single' ? 'single' : 'ab'; } catch { return 'ab'; } };
+/** 分析模式：ab = A/B 两方案对比；single = 单小区深入分析（只用 A 侧数据）。 */
+export const mode = signal(savedMode());
+export function setMode(m) {
+  mode.value = m;
+  try { localStorage.setItem(MODE_KEY, m); } catch { /* 无痕模式 */ }
+}
+/** 界面上对一侧数据的称呼：单小区模式下不再叫“方案 A”。 */
+export const sideLabel = (k) => (mode.value === 'single' ? '本小区' : `方案 ${k}`);
 export const dirs = { A: signal(null), B: signal(null) }; // {rootName, handle?, files, catalog}
 export const selection = signal({ A: null, B: null }); // 批次对象
 export const run = signal(null); // 流水线状态

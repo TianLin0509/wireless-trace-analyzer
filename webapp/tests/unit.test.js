@@ -5,6 +5,8 @@ import { filterSql, userScope } from '../src/engine/query.js';
 import { compareT396, scopeRate, regressionRadar } from '../src/engine/t396.js';
 import { verdict } from '../src/engine/stats.js';
 import { normalizePastedPath, lastSegment, toFullPath } from '../src/engine/fs.js';
+import { suggestRoot, ancestors } from '../src/engine/roots.js';
+import { findings } from '../src/engine/single.js';
 
 const f = (relPath, extra = {}) => describeFile({ relPath, size: 100, lastModified: 1, rootId: 'r', ref: {}, ...extra });
 
@@ -160,4 +162,35 @@ describe('结论判定', () => {
   it('样本不足', () => expect(verdict(def, { value: 1, n: 50, sd: 1 }, { value: 2, n: 50, sd: 1 }).level).toBe('low'));
   it('变化小于实用阈值为持平', () => expect(verdict(def, { value: 10, n: 1e5, sd: 1 }, { value: 10.1, n: 1e5, sd: 1 }).level).toBe('eq'));
   it('显著下降为回退', () => expect(verdict(def, { value: 10, n: 1e5, sd: 1 }, { value: 9, n: 1e5, sd: 1 }).level).toBe('bad'));
+});
+
+describe('单小区自动体检', () => {
+  const cell = { mcs: 20, bler: 5, trunc: 2, olla: -1, rate: 100, matchRate: 85 };
+  const u = (o) => ({ rows: 1000, valid: 1000, dtx: 0, ...o });
+  const users = [
+    u({ user: 'hi-bler', bler: 15 }), u({ user: 'few', bler: 50, valid: 50 }), u({ user: 'ok', bler: 6, mcs: 19, olla: -1.5 }),
+    u({ user: 'slow', rate: 30, share: 12 }), u({ user: 'slow-small', rate: 30, share: 2 }),
+    u({ user: 'trunc', trunc: 9 }), u({ user: 'lowmcs', mcs: 14 }), u({ user: 'olla', olla: -3.5 }), u({ user: 'dtx', valid: 800, dtx: 200 }),
+  ];
+  const f = Object.fromEntries(findings(cell, users).map((x) => [x.id, x.users]));
+  it('BLER 阈值 = max(10%, 小区×2)，样本不足的不报', () => expect(f.bler).toEqual(['hi-bler']));
+  it('速率低于小区一半且占比 ≥5% 才算拖累', () => expect(f.lowrate).toEqual(['slow']));
+  it('截包 / MCS / OLLA / DTX', () => {
+    expect(f.trunc).toEqual(['trunc']);
+    expect(f.mcs).toEqual(['lowmcs']);
+    expect(f.olla).toEqual(['olla']);
+    expect(f.dtx).toEqual(['dtx']);
+  });
+  it('匹配率低于 90% 给出数据质量提示', () => expect(f.match).toEqual([]));
+});
+
+describe('授权总目录', () => {
+  it('网络路径建议授权到共享目录，本地路径到第一级目录', () => {
+    expect(suggestRoot('\\\\100.100.97.83\\cellDT\\基线_v3\\Cell_1')).toBe('\\\\100.100.97.83\\cellDT');
+    expect(suggestRoot('D:\\data\\基线_v3')).toBe('D:\\data');
+  });
+  it('路径各级前缀', () => {
+    expect(ancestors('\\\\srv\\share\\a')).toEqual(['\\\\srv', '\\\\srv\\share', '\\\\srv\\share\\a']);
+    expect(ancestors('D:\\x\\y')).toEqual(['D:\\', 'D:\\x', 'D:\\x\\y']);
+  });
 });

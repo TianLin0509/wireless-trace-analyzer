@@ -92,7 +92,7 @@ try:
         base = analyse()
 
         # 新方式：粘贴路径 → 回车，全程不应弹出选择窗口
-        pg.goto(url + sep + "debug")
+        pg.goto(url + sep + "debug&helper=1")
         pg.wait_for_timeout(1500)
         checks["顶栏显示助手已连接"] = pg.locator(".helperchip.on").count() == 1
         choosers = []
@@ -119,7 +119,7 @@ try:
         pg.screenshot(path=f"{out}/helper-02-quality.png")
 
         # 最近分析：一键恢复走助手，不弹窗口
-        pg.goto(url + sep + "debug")
+        pg.goto(url + sep + "debug&helper=1")
         pg.wait_for_timeout(1500)
         pg.locator(".recent .rr").first.get_by_role("button", name="一键恢复").click()
         pg.wait_for_function(WAIT, timeout=300000)
@@ -129,7 +129,7 @@ try:
 
         # 旧版习惯：只粘一个总目录（A/B 都在里面），B 点“与 A 同一文件夹”自动配批次
         parent = os.path.dirname(abs_a)
-        pg.goto(url + sep + "debug")
+        pg.goto(url + sep + "debug&helper=1")
         pg.wait_for_timeout(1500)
         box = pg.locator(".pick").nth(0).locator("input.input").first
         box.fill(parent)
@@ -145,7 +145,7 @@ try:
 
         # 助手未运行：给设置说明，可下载助手；可退回选择窗口方式
         helper.terminate(); helper.wait(10)
-        pg.goto(url + sep + "debug")
+        pg.goto(url + sep + "debug&helper=1")
         pg.wait_for_timeout(2500)
         checks["顶栏显示助手未运行"] = pg.locator(".helperchip:not(.on)").count() == 1
         box = pg.locator(".pick").nth(0).locator("input.input").first

@@ -8,6 +8,24 @@ import { describeFilter } from './filters.js';
 import { MAX_CHART_METRICS, MAX_CHART_USERS } from '../engine/config.js';
 
 const SKIP = new Set(['714_匹配状态', '714_来源行号']);
+// 单小区“叠加用户”时每个用户一种颜色
+const PALETTE = ['#2563eb', '#f97316', '#16a34a', '#dc2626', '#9333ea', '#0891b2', '#ca8a04', '#db2777', '#4b5563', '#65a30d'];
+const userColor = (i) => PALETTE[i % PALETTE.length];
+/** 滑动平均：多个用户的原始逐 TTI 值叠在一起看不清，叠加时画平滑后的趋势。 */
+function movingAvg(y, w) {
+  const out = new Array(y.length);
+  let sum = 0;
+  for (let i = 0; i < y.length; i++) {
+    sum += y[i];
+    if (i >= w) sum -= y[i - w];
+    out[i] = sum / Math.min(i + 1, w);
+  }
+  return out;
+}
+const OVERLAY_LEGEND = { orientation: 'h', x: 0, y: 1.02, yanchor: 'bottom', font: { size: 11 } };
+const isSingle = () => S.mode.value === 'single';
+const sideName = (k) => S.sideLabel(k);
+const panelTitle = (r, k) => (isSingle() ? `${r.label}${rateText(r.key, k)}` : `${r.label} · 方案 ${k}${rateText(r.key, k)}`);
 
 function rateOf(scopeKey, side) {
   const c = S.t396.value;
@@ -80,13 +98,21 @@ export function ChartsTab() {
           {filters.map((f) => <span class="chip">{describeFilter(f)}</span>)}
           {v.search && <span class="chip">搜索：{v.search}</span>}
           <span class="sp" />
-          <div class="seg" title="分图：A、B 各一张，坐标范围一致；叠加：A、B 画在同一张图">
-            <button class={mode === 'split' ? 'on' : ''} onClick={() => S.updateView({ chartMode: 'split' })}>分图</button>
-            <button class={mode === 'overlay' ? 'on' : ''} onClick={() => S.updateView({ chartMode: 'overlay' })}>叠加</button>
-          </div>
+          {isSingle() ? (
+            <div class="seg" title="分图：每个用户一张；叠加用户：所选用户画在同一张图里比较（先在左侧或“用户”页选中几个用户）">
+              <button class={mode === 'split' ? 'on' : ''} onClick={() => S.updateView({ chartMode: 'split' })}>分图</button>
+              <button class={mode === 'overlay' ? 'on' : ''} onClick={() => S.updateView({ chartMode: 'overlay' })}>叠加用户</button>
+            </div>
+          ) : (
+            <div class="seg" title="分图：A、B 各一张，坐标范围一致；叠加：A、B 画在同一张图">
+              <button class={mode === 'split' ? 'on' : ''} onClick={() => S.updateView({ chartMode: 'split' })}>分图</button>
+              <button class={mode === 'overlay' ? 'on' : ''} onClick={() => S.updateView({ chartMode: 'overlay' })}>叠加</button>
+            </div>
+          )}
         </div>
         {users.length > MAX_CHART_USERS && <div class="banner warn">一次最多画 {MAX_CHART_USERS} 个用户，已取前 {MAX_CHART_USERS} 个。</div>}
-        {noAmbr && <div class="banner warn">有一侧的 537 没有 ambr 列，无法按用户区分，该侧不参与按用户的图表。</div>}
+        {noAmbr && <div class="banner warn">{isSingle() ? '537 没有 ambr 列，无法按用户区分。' : '有一侧的 537 没有 ambr 列，无法按用户区分，该侧不参与按用户的图表。'}</div>}
+        {isSingle() && mode === 'overlay' && users.length < 2 && <div class="banner info">“叠加用户”需要先选中 2 个以上用户（左侧用户栏或“用户”页点选），现在按分图显示。</div>}
         {!metrics.length && <div class="empty">在左侧选择要画的字段（最多 {MAX_CHART_METRICS} 个）。也可以在“明细”里点列名 →“按 TTI 画图”。</div>}
         {busy && <div class="banner info">正在生成图表：{busy.text}（{Math.round(busy.p * 100)}%）</div>}
         {data.error && <div class="banner warn">画图失败：{String(data.error.message || data.error)}</div>}
@@ -127,10 +153,25 @@ function NumericCards({ m, mode }) {
   const rows = m.scopes;
   const [zoom, setZoom] = useState(null);
   const present = ['A', 'B'].filter((k) => rows.some((r) => r.sides[k]));
+  const userOverlay = isSingle() && mode === 'overlay' && rows.length > 1;
+  if (isSingle() && !userOverlay) mode = 'split';
   const cols = mode === 'split' ? Math.max(1, present.length) : 1;
   // 序列：分图时 A、B 共用同一纵轴范围
   const seq = useMemo(() => {
     const data = [], titles = [];
+    if (userOverlay) {
+      // 单小区叠加用户：同一小区共用 TTI 时间轴，直接按真实 TTI 画在一张图里
+      rows.forEach((r, i) => {
+        const s = r.sides.A;
+        const y = s?.seq.y || [];
+        const w = Math.max(1, Math.round(y.length / 60));
+        data.push({ type: 'scatter', mode: 'lines', x: s?.seq.x || [], y: movingAvg(y, w), name: `${r.label}${rateText(r.key, 'A')}`, line: { color: userColor(i), width: 1.8 }, hovertemplate: `TTI %{x}<br>${m.metric} 滑动平均 %{y:.2f}<extra>${r.label}</extra>` });
+      });
+      const layout = subplotGrid(1, 1, [''], { xTitle: 'TTI', y: { title: { text: `${m.metric}（滑动平均）`, font: { size: 10 } } } });
+      layout.showlegend = true;
+      layout.legend = OVERLAY_LEGEND;
+      return { data, layout };
+    }
     let idx = 0;
     const yr = rangeOf(rows.flatMap((r) => present.flatMap((k) => r.sides[k]?.seq.y || [])));
     rows.forEach((r) => {
@@ -138,24 +179,34 @@ function NumericCards({ m, mode }) {
         present.forEach((k) => {
           idx++;
           const s = r.sides[k];
-          data.push({ type: 'scatter', mode: 'lines', x: s?.seq.x || [], y: s?.seq.y || [], name: `方案 ${k}`, line: { color: COLORS[k], width: 1 }, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}`, hovertemplate: `TTI %{x}<br>${m.metric} %{y}<extra>方案 ${k}</extra>` });
-          titles.push(`${r.label} · 方案 ${k}${rateText(r.key, k)}`);
+          data.push({ type: 'scatter', mode: 'lines', x: s?.seq.x || [], y: s?.seq.y || [], name: sideName(k), line: { color: COLORS[k], width: 1 }, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}`, hovertemplate: `TTI %{x}<br>${m.metric} %{y}<extra>${sideName(k)}</extra>` });
+          titles.push(panelTitle(r, k));
         });
       } else {
         idx++;
         present.forEach((k) => {
           const s = r.sides[k];
-          data.push({ type: 'scatter', mode: 'lines', x: (s?.seq.y || []).map((_, i) => i + 1), y: s?.seq.y || [], name: `方案 ${k}`, legendgroup: k, showlegend: idx === 1, line: { color: COLORS[k], width: 1 }, opacity: 0.85, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}` });
+          data.push({ type: 'scatter', mode: 'lines', x: (s?.seq.y || []).map((_, i) => i + 1), y: s?.seq.y || [], name: sideName(k), legendgroup: k, showlegend: idx === 1, line: { color: COLORS[k], width: 1 }, opacity: 0.85, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}` });
         });
         titles.push(overlayTitle(r));
       }
     });
     const layout = subplotGrid(rows.length, cols, titles, { xTitle: mode === 'split' ? 'TTI（升序）' : '采样序号（各自按 TTI 升序）', y: { range: yr } });
     return { data, layout };
-  }, [m, mode]);
+  }, [m, mode, userOverlay]);
   // CDF：分图时 A、B 共用同一横轴范围
   const cdf = useMemo(() => {
     const data = [], titles = [];
+    if (userOverlay) {
+      rows.forEach((r, i) => {
+        const c = r.sides.A?.stats.cdf;
+        data.push({ type: 'scatter', mode: 'lines', line: { shape: 'hv', color: userColor(i), width: 1.8 }, x: c?.x || [], y: c?.y || [], name: r.label, hovertemplate: `${m.metric} %{x}<br>累计 %{y:.0f}%<extra>${r.label}</extra>` });
+      });
+      const layout = subplotGrid(1, 1, [''], { xTitle: m.metric, y: { range: [0, 101], ticksuffix: '%' } });
+      layout.showlegend = true;
+      layout.legend = OVERLAY_LEGEND;
+      return { data, layout };
+    }
     let idx = 0;
     const xr = rangeOf(rows.flatMap((r) => present.flatMap((k) => r.sides[k]?.stats.cdf?.x || [])), 0.02);
     rows.forEach((r) => {
@@ -164,15 +215,15 @@ function NumericCards({ m, mode }) {
         idx++;
         ks.forEach((k) => {
           const c = r.sides[k]?.stats.cdf;
-          data.push({ type: 'scatter', mode: 'lines', line: { shape: 'hv', color: COLORS[k], width: 1.8 }, x: c?.x || [], y: c?.y || [], name: `方案 ${k}`, legendgroup: k, showlegend: mode !== 'split' && idx === 1, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}`, hovertemplate: `${m.metric} %{x}<br>累计 %{y:.0f}%<extra>方案 ${k}</extra>` });
+          data.push({ type: 'scatter', mode: 'lines', line: { shape: 'hv', color: COLORS[k], width: 1.8 }, x: c?.x || [], y: c?.y || [], name: sideName(k), legendgroup: k, showlegend: mode !== 'split' && idx === 1, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}`, hovertemplate: `${m.metric} %{x}<br>累计 %{y:.0f}%<extra>${sideName(k)}</extra>` });
         });
-        titles.push(mode === 'split' ? `${r.label} · 方案 ${ks[0]}${rateText(r.key, ks[0])}` : overlayTitle(r));
+        titles.push(mode === 'split' ? panelTitle(r, ks[0]) : overlayTitle(r));
       });
     });
     const layout = subplotGrid(rows.length, cols, titles, { xTitle: m.metric, x: { range: xr }, y: { range: [0, 101], ticksuffix: '%' } });
     return { data, layout };
-  }, [m, mode]);
-  const h = Math.max(300, rows.length * 250 + 60);
+  }, [m, mode, userOverlay]);
+  const h = userOverlay ? 420 : Math.max(300, rows.length * 250 + 60);
   const onRelayout = (ev) => {
     const key = Object.keys(ev).find((k) => /^xaxis\d*\.range\[0\]$/.test(k));
     if (!key) { if (Object.keys(ev).some((k) => k.endsWith('autorange'))) setZoom(null); return; }
@@ -190,19 +241,19 @@ function NumericCards({ m, mode }) {
   return (
     <>
       <div class="chartcard">
-        <h5><span>{m.metric} · 序列</span><span class="faint" style="font-weight:400;font-size:11px">{mode === 'split' ? 'A、B 纵轴范围一致 · 框选放大一段 TTI 可带到明细' : 'A、B 叠加'} · 每条最多 3000 点 · 拖右下角调大小</span></h5>
+        <h5><span>{m.metric} · 序列</span><span class="faint" style="font-weight:400;font-size:11px">{userOverlay ? `${rows.length} 个用户叠加 · 滑动平均（同一 TTI 轴，看趋势；原始值用“分图”）` : isSingle() ? '纵轴范围一致 · 框选放大一段 TTI 可带到明细' : mode === 'split' ? 'A、B 纵轴范围一致 · 框选放大一段 TTI 可带到明细' : 'A、B 叠加'} · 每条最多 3000 点 · 拖右下角调大小</span></h5>
         {zoom && (
           <div class="banner info" style="margin:4px 0">
-            <span>已放大到 方案 {zoom.side} 的 TTI {Math.ceil(zoom.lo)} – {Math.floor(zoom.hi)}</span><span class="sp" />
+            <span>已放大到 {isSingle() ? '' : `方案 ${zoom.side} 的 `}TTI {Math.ceil(zoom.lo)} – {Math.floor(zoom.hi)}</span><span class="sp" />
             <button class="btn small primary" onClick={applyZoom}>在明细中只看这段 TTI</button>
             <button class="btn small" onClick={() => setZoom(null)}>忽略</button>
           </div>
         )}
-        <Plot data={seq.data} layout={seq.layout} height={h} onRelayout={mode === 'split' ? onRelayout : undefined} />
+        <Plot data={seq.data} layout={seq.layout} height={h} onRelayout={mode === 'split' && !userOverlay ? onRelayout : undefined} />
         <StatTable m={m} />
       </div>
       <div class="chartcard">
-        <h5><span>{m.metric} · CDF</span><span class="faint" style="font-weight:400;font-size:11px">{mode === 'split' ? 'A、B 横轴范围一致' : 'A、B 叠加'}</span></h5>
+        <h5><span>{m.metric} · CDF</span><span class="faint" style="font-weight:400;font-size:11px">{userOverlay ? `${rows.length} 个用户叠加` : isSingle() ? '横轴范围一致' : mode === 'split' ? 'A、B 横轴范围一致' : 'A、B 叠加'}</span></h5>
         <Plot data={cdf.data} layout={cdf.layout} height={h} />
       </div>
     </>
@@ -210,6 +261,21 @@ function NumericCards({ m, mode }) {
 }
 
 function StatTable({ m }) {
+  if (isSingle()) {
+    return (
+      <div class="statline" style="overflow:auto">
+        <table class="t">
+          <thead><tr><th class="left">范围</th><th>样本</th><th>均值</th><th>P50</th><th>P90</th><th>最小</th><th>最大</th></tr></thead>
+          <tbody>
+            {m.scopes.map((r) => {
+              const a = r.sides.A?.stats;
+              return <tr><td class="left">{r.label}</td><td class="num">{fmtInt(a?.count)}</td><td class="num">{fmt(a?.mean, 3)}</td><td class="num">{fmt(a?.p50, 3)}</td><td class="num">{fmt(a?.p90, 3)}</td><td class="num">{fmt(a?.min, 3)}</td><td class="num">{fmt(a?.max, 3)}</td></tr>;
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
   return (
     <div class="statline" style="overflow:auto">
       <table class="t">
@@ -241,8 +307,20 @@ function StatTable({ m }) {
 function CategoryCard({ m, mode }) {
   const rows = m.scopes;
   const present = ['A', 'B'].filter((k) => rows.some((r) => r.sides[k]));
+  const userOverlay = isSingle() && mode === 'overlay' && rows.length > 1;
+  if (isSingle() && !userOverlay) mode = 'split';
   const { data, layout } = useMemo(() => {
     const data = [], titles = [];
+    if (userOverlay) {
+      const cats = [...new Set(rows.flatMap((r) => r.sides.A?.cats.values || []))];
+      rows.forEach((r, i) => {
+        const c = r.sides.A?.cats;
+        const map = new Map((c?.values || []).map((v, j) => [v, c.counts[j]]));
+        data.push({ type: 'bar', x: cats, y: cats.map((v) => ((map.get(v) || 0) / (c?.total || 1)) * 100), name: r.label, marker: { color: userColor(i) }, hovertemplate: `%{x}<br>占比 %{y:.1f}%<extra>${r.label}</extra>` });
+      });
+      const layout = { ...subplotGrid(1, 1, [''], { x: { type: 'category' }, y: { ticksuffix: '%', range: [0, 100] } }), barmode: 'group', showlegend: true, legend: OVERLAY_LEGEND };
+      return { data, layout };
+    }
     let idx = 0;
     rows.forEach((r) => {
       const cats = [...new Set(present.flatMap((k) => r.sides[k]?.cats.values || []))];
@@ -252,18 +330,18 @@ function CategoryCard({ m, mode }) {
         ks.forEach((k) => {
           const c = r.sides[k]?.cats;
           const map = new Map((c?.values || []).map((v, i) => [v, c.counts[i]]));
-          data.push({ type: 'bar', x: cats, y: cats.map((v) => ((map.get(v) || 0) / (c?.total || 1)) * 100), customdata: cats.map((v) => map.get(v) || 0), name: `方案 ${k}`, legendgroup: k, showlegend: mode !== 'split' && idx === 1, marker: { color: COLORS[k] }, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}`, hovertemplate: `%{x}<br>占比 %{y:.1f}%<br>行数 %{customdata}<extra>方案 ${k}</extra>` });
+          data.push({ type: 'bar', x: cats, y: cats.map((v) => ((map.get(v) || 0) / (c?.total || 1)) * 100), customdata: cats.map((v) => map.get(v) || 0), name: sideName(k), legendgroup: k, showlegend: mode !== 'split' && idx === 1, marker: { color: COLORS[k] }, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}`, hovertemplate: `%{x}<br>占比 %{y:.1f}%<br>行数 %{customdata}<extra>${sideName(k)}</extra>` });
         });
-        titles.push(mode === 'split' ? `${r.label} · 方案 ${ks[0]}${rateText(r.key, ks[0])}` : overlayTitle(r));
+        titles.push(mode === 'split' ? panelTitle(r, ks[0]) : overlayTitle(r));
       });
     });
     const layout = { ...subplotGrid(rows.length, mode === 'split' ? Math.max(1, present.length) : 1, titles, { x: { type: 'category' }, y: { ticksuffix: '%', range: [0, 100] } }), barmode: 'group' };
     return { data, layout };
-  }, [m, mode]);
+  }, [m, mode, userOverlay]);
   return (
     <div class="chartcard">
       <h5><span>{m.metric} · 取值分布</span><span class="faint" style="font-weight:400;font-size:11px">按行数占比（分母为该范围全部行），便于 A/B 样本量不同时对比；超过 24 类时其余合并为“其他”</span></h5>
-      <Plot data={data} layout={layout} height={Math.max(300, rows.length * 240 + 60)} />
+      <Plot data={data} layout={layout} height={userOverlay ? 380 : Math.max(300, rows.length * 240 + 60)} />
     </div>
   );
 }
@@ -274,16 +352,16 @@ function BlerCard({ bler, users }) {
   const data = ['A', 'B'].filter((k) => bler[k]).map((k) => {
     const map = new Map(bler[k].map((r) => [r.user, r]));
     return {
-      type: 'bar', name: `方案 ${k}`, marker: { color: COLORS[k] }, x: list, y: list.map((u) => map.get(u)?.bler ?? null),
+      type: 'bar', name: sideName(k), marker: { color: COLORS[k] }, x: list, y: list.map((u) => map.get(u)?.bler ?? null),
       text: list.map((u) => (map.get(u) ? `${map.get(u).bler.toFixed(1)}%` : '')), textposition: 'outside', cliponaxis: false,
       customdata: list.map((u) => [map.get(u)?.valid || 0, map.get(u)?.dtx || 0, fmt(rateOf(u, k), 2)]),
-      hovertemplate: `用户 %{x}<br>BLER %{y:.2f}%<br>有效样本 %{customdata[0]} · DTX 剔除 %{customdata[1]}<br>T396 Rate %{customdata[2]}<extra>方案 ${k}</extra>`,
+      hovertemplate: `用户 %{x}<br>BLER %{y:.2f}%<br>有效样本 %{customdata[0]} · DTX 剔除 %{customdata[1]}<br>T396 Rate %{customdata[2]}<extra>${sideName(k)}</extra>`,
     };
   });
   const layout = { barmode: 'group', xaxis: { type: 'category', title: { text: '用户 ambr', font: { size: 10 } } }, yaxis: { ticksuffix: '%', gridcolor: GRID, rangemode: 'tozero' } };
   return (
     <div class="chartcard">
-      <h5><span>BLER · 按用户 A/B 对比</span><span class="faint" style="font-weight:400;font-size:11px">剔除 ack0 非 0/1 的 DTX 后计算；{users.length ? '所选用户' : '样本最多的 20 个用户'}</span></h5>
+      <h5><span>{isSingle() ? 'BLER · 按用户' : 'BLER · 按用户 A/B 对比'}</span><span class="faint" style="font-weight:400;font-size:11px">剔除 ack0 非 0/1 的 DTX 后计算；{users.length ? '所选用户' : '样本最多的 20 个用户'}</span></h5>
       <Plot data={data} layout={layout} height={340} />
     </div>
   );
