@@ -167,6 +167,9 @@ table.t { border-collapse: separate; border-spacing: 0; width: 100%; font-varian
 .startcard { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 24px 26px; }
 .pick { border: 1.5px dashed #c9d1d9; border-radius: 12px; padding: 14px 16px; display: flex; gap: 12px; align-items: flex-start; min-height: 96px; }
 .pick.has { border-style: solid; border-color: var(--line); background: #fbfbfc; }
+.pick.dragover { border-color: var(--brand); background: var(--brand-soft); }
+.pastehint { position: sticky; top: 0; z-index: 30; margin: 12px auto 0; width: min(1020px, 94vw); background: #fffaf0; border: 1px solid #f1d7a4; color: #5c3b00; border-radius: 12px; padding: 10px 14px; }
+kbd { font: 12px var(--mono); background: #fff; border: 1px solid #d6dae0; border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; }
 .pick .body2 { flex: 1; min-width: 0; display: grid; gap: 6px; }
 .pick select { width: 100%; }
 .envnote { font-size: 12px; color: var(--soft); background: #f8f9fa; border-radius: 10px; padding: 10px 12px; margin-top: 14px; }

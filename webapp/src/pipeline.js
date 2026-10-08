@@ -226,6 +226,7 @@ async function rememberRecent() {
     signature: ['A', 'B'].map((s) => `${S.dirs[s].value?.rootName || ''}|${sel[s]?.batchId || ''}`).join('||'),
     label: `${sel.A ? batchLabel(sel.A) : '—'}  vs  ${sel.B ? batchLabel(sel.B) : '—'}`,
     roots: { A: S.dirs.A.value?.rootName || null, B: S.dirs.B.value?.rootName || null },
+    paths: { A: S.dirs.A.value?.fullPath || '', B: S.dirs.B.value?.fullPath || '' },
     handles: { A: S.dirs.A.value?.handle || null, B: S.dirs.B.value?.handle || null },
     batchIds: { A: sel.A?.batchId || null, B: sel.B?.batchId || null },
     viewId: v.id,

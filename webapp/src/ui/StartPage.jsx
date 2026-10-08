@@ -1,18 +1,24 @@
 import { useEffect, useState } from 'preact/hooks';
 import * as S from '../store.js';
-import { pickDirectory, scanDirectoryHandle, scanFileList, supportsDirectoryHandle, ensurePermission } from '../engine/fs.js';
+import { pickDirectory, scanDirectoryHandle, scanFileList, supportsDirectoryHandle, ensurePermission, normalizePastedPath, lastSegment, directoryFromDrop } from '../engine/fs.js';
 import { buildCatalog, defaultSelection, matchSameCellBatches, batchLabel } from '../engine/scan.js';
 import { startRun } from '../pipeline.js';
 import { listAll, remove } from '../persist.js';
 import { fmtBytes } from './fmt.js';
 import { Logo } from './icons.jsx';
 
-async function loadSide(side, picked) {
+const PATH_KEY = (side) => `trace-path-${side}`;
+export const savedPath = (side) => { try { return localStorage.getItem(PATH_KEY(side)) || ''; } catch { return ''; } };
+const savePath = (side, p) => { try { localStorage.setItem(PATH_KEY(side), p); } catch { /* 无痕模式等 */ } };
+
+async function loadSide(side, picked, fullPath = '') {
   S.dirs[side].value = { ...(S.dirs[side].value || {}), scanning: true };
   try {
     const res = picked.handle ? await scanDirectoryHandle(picked.handle) : scanFileList(picked.fileList);
     const catalog = buildCatalog(res.files);
-    S.dirs[side].value = { rootName: res.rootName, handle: picked.handle || null, files: res.files, catalog, truncated: res.truncated };
+    // 只有当粘贴路径的最后一级与实际选中的文件夹同名时，才把它当作这个文件夹的完整路径
+    const matched = fullPath && lastSegment(fullPath).toLowerCase() === res.rootName.toLowerCase();
+    S.dirs[side].value = { rootName: res.rootName, handle: picked.handle || null, files: res.files, catalog, truncated: res.truncated, fullPath: matched ? normalizePastedPath(fullPath) : '' };
     return catalog;
   } catch (err) {
     S.dirs[side].value = null;
@@ -32,13 +38,41 @@ export function StartPage() {
   const refreshRecents = () => listAll('recents').then((r) => setRecents(r.sort((x, y) => y.at - x.at))).catch(() => {});
   useEffect(refreshRecents, []);
 
-  const pick = async (side) => {
+  const [hint, setHint] = useState(null); // 弹出选择窗口期间的操作提示
+
+  /** pastedPath 为空：普通选择；有值：先把路径放进剪贴板，再弹出选择窗口，用户在窗口里 Ctrl+V 即可定位。 */
+  const pick = async (side, pastedPath = '') => {
+    const path = normalizePastedPath(pastedPath);
     try {
+      if (path) {
+        savePath(side, path);
+        await navigator.clipboard?.writeText(path).catch(() => {});
+        setHint({ side, path });
+      }
       const picked = await pickDirectory();
-      await loadSide(side, picked);
+      setHint(null);
+      const name = picked.handle?.name || (picked.fileList?.[0]?.webkitRelativePath || '').split('/')[0];
+      await loadSide(side, picked, path);
+      if (path && name && lastSegment(path).toLowerCase() !== name.toLowerCase()) {
+        S.showToast(`注意：粘贴的是「${lastSegment(path)}」，实际选中的是「${name}」。如果选错了，点“更换”重选。`, 6000);
+      }
       applyDefault();
     } catch (err) {
+      setHint(null);
       if (err?.name !== 'AbortError') S.showError('读取文件夹失败', err);
+    }
+  };
+
+  /** 从资源管理器把文件夹直接拖进来。 */
+  const drop = async (side, e) => {
+    e.preventDefault();
+    try {
+      const handle = await directoryFromDrop(e.dataTransfer);
+      if (!handle) return S.showToast('请拖入一个文件夹（不是单个文件）。');
+      await loadSide(side, { handle });
+      applyDefault();
+    } catch (err) {
+      S.showError('读取拖入的文件夹失败', err);
     }
   };
 
@@ -77,7 +111,7 @@ export function StartPage() {
       }
       for (const side of ['A', 'B']) {
         const h = r.handles?.[side];
-        if (h) await loadSide(side, { handle: h });
+        if (h) await loadSide(side, { handle: h }, r.paths?.[side] || '');
       }
       const find = (side) => S.dirs[side].value?.catalog.batches.find((b) => b.batchId === r.batchIds?.[side]) || null;
       const next = { A: find('A'), B: find('B') };
@@ -102,13 +136,19 @@ export function StartPage() {
         <a class="muted" style="font-size:12px;margin-right:12px" href="/probe.html">环境检查</a>
         <span class="muted" style="font-size:12px">数据只在本机浏览器内处理，不上传</span>
       </div>
+      {hint && (
+        <div class="pastehint">
+          <b>路径已复制。</b>在弹出的窗口里：点一下顶部地址栏（或底部“文件夹”输入框）→ <kbd>Ctrl</kbd>+<kbd>V</kbd> → <kbd>回车</kbd> → 点“选择文件夹”。
+          <div class="faint" style="font-size:12px;margin-top:2px">方案 {hint.side}：{hint.path}</div>
+        </div>
+      )}
       <div class="inner">
         <div class="startcard">
           <div class="row" style="align-items:baseline"><b style="font-size:17px">新建 A/B 分析</b><span class="muted">选择两个方案的数据文件夹（可以是网络盘）；同一跟踪有多个分片时自动用 trace_0。</span></div>
           <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;margin-top:14px;align-items:stretch">
-            <SideCard side="A" filters={filters.A} setFilters={(f) => setFilters({ ...filters, A: f })} onPick={() => pick('A')} />
+            <SideCard side="A" filters={filters.A} setFilters={(f) => setFilters({ ...filters, A: f })} onPick={(p) => pick('A', p)} onDrop={(e) => drop('A', e)} />
             <button class="btn" style="align-self:center" title="互换 A/B" onClick={swap}>⇄</button>
-            <SideCard side="B" filters={filters.B} setFilters={(f) => setFilters({ ...filters, B: f })} onPick={() => pick('B')} />
+            <SideCard side="B" filters={filters.B} setFilters={(f) => setFilters({ ...filters, B: f })} onPick={(p) => pick('B', p)} onDrop={(e) => drop('B', e)} />
           </div>
           <div class="row" style="margin-top:16px">
             <button class="btn" onClick={match} disabled={!S.dirs.A.value || !S.dirs.B.value}>同小区一键匹配</button>
@@ -142,7 +182,21 @@ export function StartPage() {
   );
 }
 
-function SideCard({ side, filters, setFilters, onPick }) {
+function PathBox({ side, onPick }) {
+  const [text, setText] = useState(savedPath(side));
+  const go = () => text.trim() && onPick(text);
+  return (
+    <div class="row" style="gap:6px">
+      <input class="input" style="flex:1;min-width:0;font-family:var(--mono);font-size:12px" placeholder="粘贴文件夹路径，如 D:\data\基线_v3 或 \\server\share\外场"
+        value={text} onInput={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && go()}
+        title="浏览器出于安全限制不能按路径直接读文件夹：点“打开”后在弹出的窗口里 Ctrl+V 粘贴一下即可定位" />
+      <button class="btn" disabled={!text.trim()} onClick={go}>打开</button>
+    </div>
+  );
+}
+
+function SideCard({ side, filters, setFilters, onPick, onDrop }) {
+  const [over, setOver] = useState(false);
   const d = S.dirs[side].value;
   const sel = S.selection.value[side];
   const cat = d?.catalog;
@@ -153,18 +207,23 @@ function SideCard({ side, filters, setFilters, onPick }) {
   const k = side === 'A' ? 'a' : 'b';
   const setBatch = (id) => (S.selection.value = { ...S.selection.value, [side]: cat.batches.find((b) => b.batchId === id) || null });
   return (
-    <div class={'pick' + (d?.catalog ? ' has' : '')}>
+    <div class={'pick' + (d?.catalog ? ' has' : '') + (over ? ' dragover' : '')}
+      onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
+      onDrop={(e) => { setOver(false); onDrop(e); }}>
       <span class={'k ' + k}>{side}</span>
       <div class="body2">
         {!d?.catalog ? (
           <>
             <b>{d?.scanning ? '正在扫描…' : `选择方案 ${side} 文件夹`}</b>
             <span class="muted" style="font-size:12px">{side === 'A' ? '基准方案' : '对比方案，可留空只看单方案'}</span>
-            <div><button class="btn" onClick={onPick} disabled={d?.scanning}>选择文件夹…</button></div>
+            <PathBox side={side} onPick={onPick} />
+            <div class="row" style="gap:6px"><button class="btn" onClick={() => onPick('')} disabled={d?.scanning}>选择文件夹…</button><span class="faint" style="font-size:12px">或从资源管理器把文件夹拖到这里</span></div>
           </>
         ) : (
           <>
-            <div class="row"><b style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={d.rootName}>📁 {d.rootName}</b><span class="sp" /><button class="btn small" onClick={onPick}>更换</button></div>
+            <div class="row"><b style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={d.fullPath || d.rootName}>📁 {d.rootName}</b><span class="sp" /><button class="btn small" onClick={() => onPick('')}>更换</button></div>
+            {d.fullPath && <span class="faint" style="font-size:11px;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={d.fullPath}>{d.fullPath}</span>}
+            <PathBox side={side} onPick={onPick} />
             <span class="muted" style="font-size:12px">{cat.fileCount} 个跟踪文件 · {cat.batches.length} 个批次{cases.some((c) => c.caseKey) ? ` · ${cases.filter((c) => c.caseKey).length} 个 Case` : ''}{d.truncated ? ' · 文件过多已截断' : ''}</span>
             {cases.some((c) => c.caseKey) && (
               <div class="row">

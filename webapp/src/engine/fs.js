@@ -76,3 +76,32 @@ export async function ensurePermission(handle) {
   if ((await handle.queryPermission({ mode: 'read' })) === 'granted') return true;
   return (await handle.requestPermission({ mode: 'read' })) === 'granted';
 }
+
+/** 规范化用户粘贴的路径：去引号、统一反斜杠、去掉末尾斜杠。 */
+export function normalizePastedPath(text) {
+  let p = String(text || '').trim().replace(/^["']+|["']+$/g, '').trim();
+  if (!p) return '';
+  p = p.replace(/\//g, '\\').replace(/\\+$/, '');
+  if (/^[a-zA-Z]:$/.test(p)) p += '\\';
+  return p;
+}
+
+/** 路径的最后一级目录名，用来核对用户在弹窗里选中的是不是粘贴的那个文件夹。 */
+export const lastSegment = (p) => normalizePastedPath(p).split('\\').filter(Boolean).pop() || '';
+
+/** 把“所选文件夹内的相对路径”拼成用户能认的完整路径（浏览器本身拿不到绝对路径，只能用粘贴的路径补上）。 */
+export function toFullPath(basePath, relPath) {
+  if (!basePath) return relPath;
+  const rest = String(relPath || '').split('/').slice(1).join('\\');
+  return rest ? `${normalizePastedPath(basePath)}\\${rest}` : normalizePastedPath(basePath);
+}
+
+/** 从拖放事件里取出文件夹句柄（Chrome / Edge 支持）。 */
+export async function directoryFromDrop(dataTransfer) {
+  for (const item of dataTransfer?.items || []) {
+    if (item.kind !== 'file' || !item.getAsFileSystemHandle) continue;
+    const h = await item.getAsFileSystemHandle();
+    if (h?.kind === 'directory') return h;
+  }
+  return null;
+}

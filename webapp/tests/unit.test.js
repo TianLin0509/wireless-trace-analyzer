@@ -4,6 +4,7 @@ import { sniffText, splitCsvLine } from '../src/engine/csvsniff.js';
 import { filterSql, userScope } from '../src/engine/query.js';
 import { compareT396, scopeRate, regressionRadar } from '../src/engine/t396.js';
 import { verdict } from '../src/engine/stats.js';
+import { normalizePastedPath, lastSegment, toFullPath } from '../src/engine/fs.js';
 
 const f = (relPath, extra = {}) => describeFile({ relPath, size: 100, lastModified: 1, rootId: 'r', ref: {}, ...extra });
 
@@ -112,6 +113,21 @@ describe('筛选 SQL', () => {
   it('全局搜索覆盖全部列（不再只搜前 40 列）', () => {
     const many = Array.from({ length: 60 }, (_, i) => `c${i}`);
     expect(filterSql([], many, 'x')).toContain('"c59"');
+  });
+});
+
+describe('粘贴路径', () => {
+  it('去引号、统一反斜杠、去掉末尾斜杠', () => {
+    expect(normalizePastedPath('  "D:/data/基线_v3/"  ')).toBe('D:\\data\\基线_v3');
+    expect(normalizePastedPath('\\\\server\\share\\外场\\')).toBe('\\\\server\\share\\外场');
+    expect(normalizePastedPath('D:')).toBe('D:\\');
+  });
+  it('取最后一级目录名用于核对', () => {
+    expect(lastSegment('\\\\server\\share\\外场\\')).toBe('外场');
+  });
+  it('相对路径拼成完整路径', () => {
+    expect(toFullPath('D:\\data\\方案A', '方案A/基线_v3/Cell_1/ParseResult/x.csv')).toBe('D:\\data\\方案A\\基线_v3\\Cell_1\\ParseResult\\x.csv');
+    expect(toFullPath('', '方案A/x.csv')).toBe('方案A/x.csv');
   });
 });
 

@@ -1,5 +1,6 @@
 import * as S from '../store.js';
 import { fmtInt, fmtBytes, fmt, fmtSec } from './fmt.js';
+import { toFullPath } from '../engine/fs.js';
 
 const ERR_TEXT = { 'TOO MANY COLUMNS': '字段数过多', 'MISSING COLUMNS': '字段数不足', 'UNQUOTED VALUE': '引号不匹配', 'INVALID UNICODE': '编码错误', CAST: '类型转换失败', 'LINE SIZE OVER MAXIMUM': '单行过长' };
 
@@ -56,7 +57,7 @@ export function QualityTab() {
         )}
       </div>
       <div class="section">
-        <div class="sh"><b>数据来源</b><span class="faint" style="font-size:12px">路径相对于所选文件夹；浏览器出于安全原因不提供磁盘绝对路径</span></div>
+        <div class="sh"><b>数据来源</b><span class="faint" style="font-size:12px">通过粘贴路径打开的文件夹显示完整路径；直接选择或拖入的显示相对路径（浏览器不提供绝对路径）</span></div>
         <div style="overflow:auto">
           <table class="t">
             <thead><tr><th>方案</th><th>跟踪</th><th class="left">文件</th><th>大小</th><th>读入行数</th><th>坏行</th><th>读入字段</th><th class="left">说明</th></tr></thead>
@@ -65,7 +66,7 @@ export function QualityTab() {
                 <tr>
                   <td class={s.side}>{s.side}</td>
                   <td>T{s.trace}</td>
-                  <td class="left" title={s.relPath}>{s.relPath}</td>
+                  <td class="left" title={toFullPath(S.dirs[s.side].value?.fullPath, s.relPath)}>{toFullPath(S.dirs[s.side].value?.fullPath, s.relPath)}</td>
                   <td class="num">{fmtBytes(s.size)}</td>
                   <td class="num">{fmtInt(s.quality?.acceptedRows ?? s.rows)}</td>
                   <td class={'num ' + (s.quality?.rejectedRows ? 'dn' : '')}>{fmtInt(s.quality?.rejectedRows || 0)}</td>

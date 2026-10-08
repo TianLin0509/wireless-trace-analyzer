@@ -97,9 +97,9 @@ function TopBar({ onToggleRail }) {
     <div class="top">
       <button class="btn icon" title="显示 / 隐藏用户栏" onClick={onToggleRail}>☰</button>
       <div class="logo"><Logo /></div><span class="brand">Trace A/B</span>
-      <div class="srcchip" title={sel.A?.contextLabel || ''}><span class="k a">A</span><span class="tx">{sel.A ? batchLabel(sel.A) : '未选择'}</span></div>
+      <div class="srcchip" title={S.dirs.A.value?.fullPath || sel.A?.contextLabel || ''}><span class="k a">A</span><span class="tx">{sel.A ? batchLabel(sel.A) : '未选择'}</span></div>
       <button class="btn icon" title="互换 A/B 并重新分析" disabled={running} onClick={swap}>⇄</button>
-      <div class="srcchip" title={sel.B?.contextLabel || ''}><span class="k b">B</span><span class="tx">{sel.B ? batchLabel(sel.B) : '未选择'}</span></div>
+      <div class="srcchip" title={S.dirs.B.value?.fullPath || sel.B?.contextLabel || ''}><span class="k b">B</span><span class="tx">{sel.B ? batchLabel(sel.B) : '未选择'}</span></div>
       <button class="btn" onClick={() => { cancelRun(); S.page.value = 'start'; }}>更换数据</button>
       <span class="sp" />
       <div style="position:relative">
