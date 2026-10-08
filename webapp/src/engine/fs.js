@@ -1,6 +1,7 @@
 // 本机文件夹访问：优先用目录句柄（可记住授权、下次一键恢复）；不支持时退回 webkitdirectory 选择框。
 // 文件只在浏览器内存中按需读取，不会离开本机。
 import { describeFile, MAX_SCAN_FILES } from './scan.js';
+import { helperFile, helperHead } from './helper.js';
 
 export const supportsDirectoryHandle = () => typeof window !== 'undefined' && 'showDirectoryPicker' in window && !new URLSearchParams(location.search).has('picker');
 
@@ -65,11 +66,20 @@ export function scanFileList(fileList) {
   return { rootName, files, truncated: fileList.length > MAX_SCAN_FILES };
 }
 
-/** 取得可读的 File；目录句柄来源时重新 getFile，保证读到磁盘上的最新内容。 */
-export async function getFile(desc) {
+/** 取得可读的 File；目录句柄来源时重新 getFile，保证读到磁盘上的最新内容；本机助手来源时整份读入（onProgress 0..1）。 */
+export async function getFile(desc, onProgress) {
+  if (desc.ref?.helper) return helperFile(desc, onProgress);
   if (desc.ref?.handle) return desc.ref.handle.getFile();
   return desc.ref.file;
 }
+
+/** 只为预检表头取文件开头：本机助手来源时只传前 bytes 字节，其他来源直接给 File。 */
+export async function getHead(desc, bytes) {
+  if (desc.ref?.helper) return helperHead(desc, bytes);
+  return getFile(desc);
+}
+
+export const isHelperFile = (desc) => !!desc?.ref?.helper;
 
 export async function ensurePermission(handle) {
   if (!handle?.queryPermission) return true;
@@ -81,19 +91,23 @@ export async function ensurePermission(handle) {
 export function normalizePastedPath(text) {
   let p = String(text || '').trim().replace(/^["']+|["']+$/g, '').trim();
   if (!p) return '';
+  // Linux / macOS 路径（以单个 / 开头）保持原样，只去掉末尾斜杠
+  if (p.startsWith('/') && !p.startsWith('//')) return p.replace(/\/+$/, '') || '/';
   p = p.replace(/\//g, '\\').replace(/\\+$/, '');
   if (/^[a-zA-Z]:$/.test(p)) p += '\\';
   return p;
 }
 
 /** 路径的最后一级目录名，用来核对用户在弹窗里选中的是不是粘贴的那个文件夹。 */
-export const lastSegment = (p) => normalizePastedPath(p).split('\\').filter(Boolean).pop() || '';
+export const lastSegment = (p) => normalizePastedPath(p).split(/[\\/]/).filter(Boolean).pop() || '';
 
 /** 把“所选文件夹内的相对路径”拼成用户能认的完整路径（浏览器本身拿不到绝对路径，只能用粘贴的路径补上）。 */
 export function toFullPath(basePath, relPath) {
   if (!basePath) return relPath;
-  const rest = String(relPath || '').split('/').slice(1).join('\\');
-  return rest ? `${normalizePastedPath(basePath)}\\${rest}` : normalizePastedPath(basePath);
+  const base = normalizePastedPath(basePath);
+  const sep = base.startsWith('/') ? '/' : '\\';
+  const rest = String(relPath || '').split('/').slice(1).join(sep);
+  return rest ? `${base}${base.endsWith(sep) ? '' : sep}${rest}` : base;
 }
 
 /** 从拖放事件里取出文件夹句柄（Chrome / Edge 支持）。 */

@@ -116,6 +116,7 @@ function TopBar({ onToggleRail }) {
                   <span class="st" />
                   <div>
                     <div>{s.label}{s.file?.name && <span class="faint" style="font-size:11px"> · {s.file.name}</span>}</div>
+                    {s.note && <div class="faint" style="font-size:11px">{s.note}</div>}
                     {s.state === 'run' && <div class="minibar"><s style={{ width: `${(s.pct || 0) * 100}%` }} /></div>}
                     {s.error && <div class="dn" style="font-size:12px">{s.error}</div>}
                   </div>

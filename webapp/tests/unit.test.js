@@ -121,6 +121,8 @@ describe('粘贴路径', () => {
     expect(normalizePastedPath('  "D:/data/基线_v3/"  ')).toBe('D:\\data\\基线_v3');
     expect(normalizePastedPath('\\\\server\\share\\外场\\')).toBe('\\\\server\\share\\外场');
     expect(normalizePastedPath('D:')).toBe('D:\\');
+    expect(normalizePastedPath('"\\\\100.100.97.83\\cellDT\\"')).toBe('\\\\100.100.97.83\\cellDT');
+    expect(normalizePastedPath('/home/u/data/')).toBe('/home/u/data');
   });
   it('取最后一级目录名用于核对', () => {
     expect(lastSegment('\\\\server\\share\\外场\\')).toBe('外场');
@@ -128,6 +130,8 @@ describe('粘贴路径', () => {
   it('相对路径拼成完整路径', () => {
     expect(toFullPath('D:\\data\\方案A', '方案A/基线_v3/Cell_1/ParseResult/x.csv')).toBe('D:\\data\\方案A\\基线_v3\\Cell_1\\ParseResult\\x.csv');
     expect(toFullPath('', '方案A/x.csv')).toBe('方案A/x.csv');
+    expect(toFullPath('D:\\', 'D:/Cell_1/x.csv')).toBe('D:\\Cell_1\\x.csv');
+    expect(toFullPath('/home/u/方案A', '方案A/Cell_1/x.csv')).toBe('/home/u/方案A/Cell_1/x.csv');
   });
 });
 

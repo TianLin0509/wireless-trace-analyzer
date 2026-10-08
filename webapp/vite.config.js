@@ -7,7 +7,7 @@ const BUILD_ID = new Date().toISOString();
 const VERSION = process.env.npm_package_version || '1.0.0';
 
 // 与线上 Caddy 响应头一致的安全策略，作为页面内兜底：换一台静态服务器部署时依然禁止页面向外发送请求
-const CSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; "
+const CSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'self' blob: data: http://127.0.0.1:17861; "
   + "img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'";
 
 const metaCsp = () => ({

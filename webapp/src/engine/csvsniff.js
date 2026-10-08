@@ -3,7 +3,7 @@
 import { KNOWN_NUMERIC } from './config.js';
 
 export const ID_LIKE_COLUMNS = new Set(['tti', 'crnti', 'ambr', 'usrId', 'HH:MM:SS', 'frm', 'slotNo', 'slotNum', 'rptTti']);
-const SNIFF_BYTES = 4 * 1024 * 1024;
+export const SNIFF_BYTES = 4 * 1024 * 1024;
 
 export function splitCsvLine(line, delim) {
   const out = [];

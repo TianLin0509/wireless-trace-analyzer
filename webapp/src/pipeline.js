@@ -2,11 +2,11 @@
 // 任务串行：新任务先让旧任务停下并等它真正结束，再清理旧表，避免两个任务交叉改写同名表和界面状态。
 import { batch as signalBatch } from '@preact/signals';
 import { ingestT396, ingestTable, dropTable } from './engine/ingest.js';
-import { sniffFile } from './engine/csvsniff.js';
+import { sniffFile, SNIFF_BYTES } from './engine/csvsniff.js';
 import { mergeSide } from './engine/merge.js';
 import { compareT396 } from './engine/t396.js';
-import { getFile } from './engine/fs.js';
-import { memoryUsage } from './engine/db.js';
+import { getFile, getHead, isHelperFile } from './engine/fs.js';
+import { memoryUsage, unregisterFile } from './engine/db.js';
 import { addRecent } from './persist.js';
 import { batchLabel } from './engine/scan.js';
 import * as S from './store.js';
@@ -119,6 +119,21 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
     }
   };
 
+  // 本机助手来源：先把文件从本机 / 网络盘读进浏览器（显示读取进度），再交给引擎
+  const fetchFile = async (id, f) => {
+    if (!isHelperFile(f)) return getFile(f);
+    setStep(id, { state: 'run', pct: 0, note: '正在通过本机助手读取文件…' });
+    const t0 = performance.now();
+    try {
+      const file = await getFile(f, (x) => setStep(id, { pct: x * 0.95, note: `正在通过本机助手读取文件 ${Math.round(x * 100)}%` }));
+      setStep(id, { note: `经本机助手读取文件 ${((performance.now() - t0) / 1000).toFixed(1)} 秒` });
+      return file;
+    } catch (err) {
+      setStep(id, { state: 'error', error: String(err?.message || err), note: '' });
+      throw err;
+    }
+  };
+
   const srcMeta = tablesOnly ? { ...S.sources.value } : {};
   const record = (key, meta) => { srcMeta[key] = meta; if (alive()) S.sources.value = { ...srcMeta }; };
   const errors = [];
@@ -131,8 +146,9 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
         const f = files[key];
         if (!f) continue;
         try {
-          const file = await getFile(f);
+          const file = await fetchFile(key, f);
           const res = await timed(key, file.size / 4, () => ingestT396(key, file));
+          await unregisterFile(key);
           agg[side] = res.aggregate;
           record(key, { key, trace: '396', side, name: f.name, relPath: f.relPath, size: file.size, rows: res.rows, users: res.aggregate.length, quality: res.quality });
         } catch (err) {
@@ -151,8 +167,8 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
         const f = files[`${side}${id}`];
         if (!f) continue;
         try {
-          const file = await getFile(f);
-          pre[`${side}${id}`] = { file, sniff: await sniffFile(file) };
+          // 只读文件开头做预检；整份文件到真正读入这一侧时才取，网络盘上不会一次拉下四个大文件
+          pre[`${side}${id}`] = { sniff: await sniffFile(await getHead(f, SNIFF_BYTES)) };
         } catch (err) {
           errors.push(`${side}${id}：${err.message || err}`);
         }
@@ -176,7 +192,8 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
         if (!f || !pre[key]) continue;
         if (id === '714' && !t['537']) { setStep(key, { state: 'skip' }); continue; }
         try {
-          const { file, sniff } = pre[key];
+          const { sniff } = pre[key];
+          const file = await fetchFile(key, f);
           const res = await timed(key, file.size, () => ingestTable(key, file, id, wantedFor(id), sniff));
           t[id] = res;
           record(key, { key, trace: id, side, name: f.name, relPath: f.relPath, size: file.size, rows: res.rows, columns: res.columns, selected: res.selected, numericColumns: res.numericColumns, quality: res.quality, ignored: (sel[side]?.traces[id]?.candidates.length || 1) - 1 });
@@ -196,6 +213,9 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
       }
       await dropTable(`src_${side}537`);
       await dropTable(`src_${side}714`);
+      // 原文件不再需要：从引擎里摘掉，浏览器可以回收读进来的文件缓存
+      await unregisterFile(`${side}537`);
+      await unregisterFile(`${side}714`);
       guard();
     }
     const mem = await memoryUsage();
@@ -228,6 +248,7 @@ async function rememberRecent() {
     roots: { A: S.dirs.A.value?.rootName || null, B: S.dirs.B.value?.rootName || null },
     paths: { A: S.dirs.A.value?.fullPath || '', B: S.dirs.B.value?.fullPath || '' },
     handles: { A: S.dirs.A.value?.handle || null, B: S.dirs.B.value?.handle || null },
+    via: { A: S.dirs.A.value?.via || null, B: S.dirs.B.value?.via || null },
     batchIds: { A: sel.A?.batchId || null, B: sel.B?.batchId || null },
     viewId: v.id,
     viewName: v.name,
