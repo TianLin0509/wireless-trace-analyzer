@@ -15,6 +15,7 @@ export const defaultView = () => ({
   sort: null,
   chartMetrics: [...DEFAULT_CHART_METRICS],
   chartMode: 'split', // split 分图（默认） | overlay 叠加
+  chartSmoothWindow: 'auto',
 });
 
 export const page = signal('start'); // start | work | kpi
@@ -44,6 +45,7 @@ export const toast = signal(null);
 export const errorBox = signal(null);
 export const kpiState = signal(null);
 export const qualityAck = signal(false);
+export const diagnosis = signal(null); // 用户主动打开的定位线索；换数据时清空
 
 export const ready = computed(() => !!(sides.value.A || sides.value.B));
 export const running = computed(() => run.value?.status === 'running');

@@ -5,6 +5,7 @@ import { useAsync } from './hooks.js';
 import { userMetrics, cellBasics, joinRates } from '../engine/single.js';
 import { filterSql } from '../engine/query.js';
 import { fmt, fmtInt, localDateTag } from './fmt.js';
+import { ScopeNote } from './ScopeNote.jsx';
 
 const COLS = [
   { k: 'user', label: '用户（ambr）', left: true },
@@ -68,6 +69,7 @@ export function UserTable() {
   const cell = d?.cell || {};
   return (
     <div>
+      <ScopeNote allUsers />
       <div class="tool">
         <input class="input" style="width:180px" placeholder="搜索 ambr" value={q} onInput={(e) => setQ(e.target.value)} />
         <span class="muted" style="font-size:12px">{d ? `${rows.length} 个用户` : ''}{selected.size ? ` · 已选 ${selected.size} 个` : ''} · 点行选中用户，点表头排序；<span class="dn">红色</span> = 明显差于小区整体（规则同自动体检）</span>

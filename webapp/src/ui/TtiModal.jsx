@@ -3,9 +3,9 @@ import { useAsync } from './hooks.js';
 import { ttiPreview } from '../engine/query.js';
 
 /** TTI 上下文：不受任何筛选影响，显示同一调度时刻的全部用户行。 */
-export function TtiModal({ side, sideKey, tti, columns, onClose }) {
+export function TtiModal({ side, sideKey, tti, columns, onClose, focusUser }) {
   const res = useAsync(() => ttiPreview(side, tti, columns), [tti, side.table]);
-  const sel = new Set(S.users.value);
+  const sel = new Set(focusUser ? [focusUser] : S.users.value);
   const d = res.data;
   return (
     <div class="modal-wrap" onClick={(e) => e.target === e.currentTarget && onClose()}>

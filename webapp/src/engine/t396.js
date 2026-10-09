@@ -12,6 +12,10 @@ export function compareT396(aggA = [], aggB = []) {
   const byB = new Map(aggB.map((r) => [r.userId, r]));
   const totalA = aggA.reduce((s, r) => s + (r.sumTime || 0), 0);
   const totalB = aggB.reduce((s, r) => s + (r.sumTime || 0), 0);
+  const rateA = cellRate(aggA), rateB = cellRate(aggB);
+  // 贡献用小区 A 的速率作同一分母，所有用户加总等于小区相对变化。
+  // 用两侧占比/速率的中点对称拆分；单侧新增/消失用户归入占比变化。
+  const scale = rateA != null && rateA !== 0 && totalA > 0 && totalB > 0 ? 100 / rateA : null;
   const users = [...new Set([...byA.keys(), ...byB.keys()])];
   const rows = users.map((u) => {
     const a = byA.get(u), b = byB.get(u);
@@ -19,16 +23,22 @@ export function compareT396(aggA = [], aggB = []) {
     const shareB = b && totalB > 0 ? (b.sumTime / totalB) * 100 : null;
     const diff = pct(a?.rate, b?.rate);
     const share = Math.max(shareA || 0, shareB || 0);
+    const sa = (shareA || 0) / 100, sb = (shareB || 0) / 100;
+    const contribution = scale == null ? null : ((b?.sumVol || 0) / totalB - (a?.sumVol || 0) / totalA) * scale;
+    const ra = a?.rate ?? b?.rate, rb = b?.rate ?? a?.rate;
+    const rateContribution = contribution == null || ra == null || rb == null ? null : (sa + sb) / 2 * (rb - ra) * scale;
     return {
       userId: u, rateA: a?.rate ?? null, rateB: b?.rate ?? null, diffPct: diff,
       sumVolA: a?.sumVol ?? 0, sumVolB: b?.sumVol ?? 0, sumTimeA: a?.sumTime ?? 0, sumTimeB: b?.sumTime ?? 0,
       shareA, shareB, maxShare: share,
-      // 对小区速率的拖累（百分点）：用户 Rate 变化 × TTI 占比
+      // 旧版排序分数，仅为兼容保留；不能当成可加总的小区贡献。
       impact: diff != null ? (diff * share) / 100 : null,
+      contributionPt: contribution,
+      rateContributionPt: rateContribution,
+      shareContributionPt: rateContribution == null ? null : contribution - rateContribution,
     };
   });
   rows.sort((x, y) => y.maxShare - x.maxShare || x.userId.localeCompare(y.userId));
-  const rateA = cellRate(aggA), rateB = cellRate(aggB);
   return { available: !!(aggA.length || aggB.length), cellRateA: rateA, cellRateB: rateB, diffPct: pct(rateA, rateB), totalTimeA: totalA, totalTimeB: totalB, rows };
 }
 

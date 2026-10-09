@@ -238,3 +238,18 @@ export function batchLabel(b) {
   const place = [b.caseName, b.cellName].filter(Boolean).join(' · ');
   return `${place || b.directory || '当前目录'} · ${b.testTimeShort}`;
 }
+
+/** 修改一类跟踪的读取文件，保留批次身份；默认仍使用 trace_0。 */
+export function selectTraceFile(batch, traceId, relPath) {
+  const trace = batch?.traces[traceId];
+  const file = trace?.candidates.find((f) => f.relPath === relPath);
+  if (!file) throw new Error(`所选 T${traceId} 文件已不在这个批次中，请重新扫描。`);
+  const traces = { ...batch.traces, [traceId]: { ...trace, selected: file } };
+  return { ...batch, traces, totalBytes: SUPPORTED_TRACES.reduce((n, id) => n + (traces[id]?.selected?.size || 0), 0) };
+}
+
+export function restoreTraceChoices(batch, choices = {}) {
+  let next = batch;
+  for (const [id, path] of Object.entries(choices)) next = selectTraceFile(next, id, path);
+  return next;
+}

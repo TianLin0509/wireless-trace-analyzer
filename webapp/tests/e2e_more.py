@@ -98,7 +98,7 @@ with sync_playwright() as p:
     # 7) 单方案：更换数据，B 选空；用户范围应重置
     pg.get_by_role("button", name="更换数据").click(); pg.wait_for_timeout(500)
     pg.locator(".pick").nth(1).locator("select").last.select_option("")
-    pg.get_by_role("button", name="开始分析").click(); ready(pg); pg.wait_for_timeout(1500)
+    pg.get_by_role("button", name="仅分析 A").click(); ready(pg); pg.wait_for_timeout(1500)
     log["single_status"] = pg.inner_text(".prog")
     log["single_users_reset"] = pg.evaluate("() => window.__trace.S.users.value.length")
     pg.screenshot(path=f"{out}/more-03-single.png")

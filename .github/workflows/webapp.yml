@@ -50,6 +50,7 @@ jobs:
           python tests/helper_check.py http://127.0.0.1:5318/ output/data/sample/方案A output/data/sample/方案B output/e2e
           python tests/single_check.py http://127.0.0.1:5318/ output/data/sample/方案A output/e2e
           python tests/roots_check.py http://127.0.0.1:5318/ output/data/sample output/e2e
+          python tests/20261009-improvements_check.py http://127.0.0.1:5318/ output/data/sample/方案A output/data/sample/方案B output/e2e
           python tests/parity_old.py .. output/data/sample/方案A output/data/sample/方案B Cell_1 output/parity-old.json
           python tests/parity_web.py http://127.0.0.1:5318/ output/data/sample/方案A output/data/sample/方案B Cell_1 output/parity-web.json
           python tests/parity_compare.py output/parity-old.json output/parity-web.json

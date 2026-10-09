@@ -102,6 +102,44 @@ export function joinRates(users, t396) {
   return out;
 }
 
+/** 同一用户的线索合并展示，仍保留每条规则和有效样本，不推断根因。 */
+export function groupFindings(items, users) {
+  const metrics = new Map(users.map((u) => [u.user, u]));
+  const groups = new Map();
+  for (const item of items) for (const id of item.users) {
+    if (!groups.has(id)) groups.set(id, { user: id, metrics: metrics.get(id) || {}, items: [] });
+    groups.get(id).items.push(item);
+  }
+  return [...groups.values()].sort((a, b) => {
+    const score = (g) => g.items.reduce((n, i) => n + (i.level === 'warn' ? 2 : 1), 0);
+    return score(b) - score(a) || (b.metrics.share || 0) - (a.metrics.share || 0) || a.user.localeCompare(b.user, 'zh', { numeric: true });
+  });
+}
+
+/** 指标平均值触发规则后，下面的条件仅定位候选行，不能当成已确认根因。 */
+export function findingFilters(id, cell, R = FINDING_RULES) {
+  const condition = (column, op, value) => ({ column, op, value });
+  switch (id) {
+    case 'bler': return [condition('714_ack0', 'eq_num', 0)];
+    case 'trunc': return [condition('usrschpdschDrbData', 'gt', 0), condition('usrschpdschDrbData', 'lt', TRUNCATED_LIMIT)];
+    case 'mcs': return [condition('cw0SuMcs', 'lte', cell.mcs - R.mcsDrop)];
+    case 'olla': return [condition('714_compOlla_scaled', 'lte', cell.olla - R.ollaDrop)];
+    case 'dtx': return [condition('714_ack0', 'not_null'), condition('714_ack0', 'not_in', [0, 1])];
+    default: return []; // T396 聚合速率无法映射到单个 T537 时刻
+  }
+}
+
+export function checkCoverage(side, t396) {
+  const definitions = [
+    ['BLER', '714_ack0'], ['截包', 'usrschpdschDrbData'], ['MCS', 'cw0SuMcs'],
+    ['OLLA', '714_compOlla_scaled'], ['DTX', '714_ack0'],
+  ];
+  const available = definitions.filter(([, c]) => side.columns.includes(c)).map(([n]) => n);
+  const missing = definitions.filter(([, c]) => !side.columns.includes(c)).map(([n]) => n);
+  (t396?.cellRateA != null ? available : missing).push('速率×占比');
+  return { available, missing };
+}
+
 export const FINDING_RULES = {
   minRows: 200,
   blerAbs: 10, blerRel: 2,
@@ -130,7 +168,7 @@ export function findings(cell, users, R = FINDING_RULES) {
       users.filter((u) => u.bler != null && (u.valid || 0) >= R.minRows && u.bler >= th).sort((a, b) => b.bler - a.bler), '714_ack0', (u) => `${u.user}：${f1(u.bler)}%`);
   }
   if (cell.rate != null) {
-    add('lowrate', 'warn', '速率低且占用 TTI 多（拖低小区速率）', `T396 速率 < 小区 ${f1(cell.rate)} × ${R.lowRate}，且 TTI 占比 ≥ ${R.lowRateShare}%`,
+    add('lowrate', 'warn', '速率低且占用 TTI 多（优先检查）', `T396 速率 < 小区 ${f1(cell.rate)} × ${R.lowRate}，且 TTI 占比 ≥ ${R.lowRateShare}%`,
       users.filter((u) => u.rate != null && u.share != null && u.rate < cell.rate * R.lowRate && u.share >= R.lowRateShare).sort((a, b) => b.share - a.share), 'cw0SuMcs',
       (u) => `${u.user}：Rate ${u.rate.toFixed(2)} · 占比 ${f1(u.share)}%`);
   }

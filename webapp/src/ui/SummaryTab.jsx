@@ -4,6 +4,8 @@ import { summaryCards, userBreakdown, matchStats } from '../engine/stats.js';
 import { filterSql } from '../engine/query.js';
 import { scopeRate } from '../engine/t396.js';
 import { fmt, fmtPct, fmtInt, fmtDelta } from './fmt.js';
+import { rateScopeLabel } from '../engine/analysis-scope.js';
+import { ScopeNote } from './ScopeNote.jsx';
 
 function Spark({ a, b }) {
   if (!a?.cdf && !b?.cdf) return null;
@@ -63,12 +65,14 @@ export function SummaryTab() {
         </div>
         <span class="faint" style="font-size:12px;white-space:nowrap">点卡片 → 跳到对应图表</span>
       </div>
+      <ScopeNote />
       <div class="kgrid">
         {cmp && (
           <div class="kcard" onClick={() => (S.tab.value = 'qa')}>
             <div class="nm"><span>{users.length ? '所选用户 Rate（T396）' : '小区 Rate（T396）'}</span>{rate.diff == null ? null : <span class={'tag ' + (rate.diff <= -2 ? 'bad' : rate.diff >= 2 ? 'good' : '')}>{rate.diff <= -2 ? '回退' : rate.diff >= 2 ? '改善' : '持平'}</span>}</div>
             <div class="vals num"><span class="big A">{fmt(rate.a, 2)}</span><span class="muted">→</span><span class="big B">{fmt(rate.b, 2)}</span><span class={'delta ' + (rate.diff < 0 ? 'dn' : 'up')}>{fmtPct(rate.diff)}</span></div>
             <div class="foot">Rate = Σ dlThpVolRmvLastSlot / Σ dlThpTimeRmvLastSlot</div>
+            <div class="foot">{rateScopeLabel(users, v)}</div>
           </div>
         )}
         {!ready && S.running.value && [1, 2, 3, 4, 5].map(() => <div class="kcard skeleton" style="height:118px" />)}
@@ -103,10 +107,10 @@ function headline(cmp, rate, users) {
   const who = users.length ? '所选用户速率' : '小区速率';
   const base = `B 相对 A：${who} ${fmtPct(rate.diff)}`;
   if (users.length) return base;
-  const drag = cmp.rows.filter((r) => r.impact != null && r.impact <= -0.5).sort((a, b) => a.impact - b.impact).slice(0, 3);
-  const lift = cmp.rows.filter((r) => r.impact != null && r.impact >= 0.5).sort((a, b) => b.impact - a.impact).slice(0, 3);
-  if (rate.diff < 0 && drag.length) return `${base}，主要来自 ${drag.map((r) => r.userId).join('、')}`;
-  if (rate.diff > 0 && lift.length) return `${base}，主要来自 ${lift.map((r) => r.userId).join('、')}`;
+  const drag = cmp.rows.filter((r) => r.contributionPt != null && r.contributionPt <= -0.5).sort((a, b) => a.contributionPt - b.contributionPt).slice(0, 3);
+  const lift = cmp.rows.filter((r) => r.contributionPt != null && r.contributionPt >= 0.5).sort((a, b) => b.contributionPt - a.contributionPt).slice(0, 3);
+  if (rate.diff < 0 && drag.length) return `${base}，优先检查 ${drag.map((r) => r.userId).join('、')}`;
+  if (rate.diff > 0 && lift.length) return `${base}，优先检查 ${lift.map((r) => r.userId).join('、')}`;
   return base;
 }
 
@@ -128,7 +132,8 @@ function ImpactTable() {
     return out;
   }, [S.dataVersion.value, JSON.stringify(tableFilters), v.search, ready]);
   if (!cmp) return null;
-  const rows = cmp.rows.filter((r) => r.impact != null).sort((a, b) => a.impact - b.impact).slice(0, 8);
+  const rows = cmp.rows.filter((r) => r.contributionPt != null).sort((a, b) => a.contributionPt - b.contributionPt);
+  const total = rows.length ? rows.reduce((s, r) => s + r.contributionPt, 0) : null;
   const bd = breakdown.data;
   const companion = (u) => {
     if (!bd?.A || !bd?.B) return '';
@@ -147,18 +152,22 @@ function ImpactTable() {
   };
   return (
     <div class="section">
-      <div class="sh"><b>最值得看的用户</b><span class="faint" style="font-size:12px">排序 = Rate 变化 × TTI 占比（对小区总速率的拖累，单位：百分点）</span></div>
+      <div class="sh"><b>最值得看的用户</b><span class="muted" style="font-size:12px">T396 全批次贡献合计 {fmtDelta(total, 2, ' pt')} · 小区变化 {fmtPct(cmp.diffPct)} · 数学分解，不代表因果</span></div>
+      <details class="contribution-help"><summary>贡献怎么算，受哪些筛选影响？</summary><p>总贡献 = 该用户在 B 的速率加权项减去 A 的速率加权项，再除以小区 A 速率。速率变化与占比变化用两侧中点对称分摊，所有用户总贡献相加等于小区相对变化。新增或消失用户归入占比变化；仅一侧有数据或 A 小区速率为零时不能计算。贡献与 T396 速率都覆盖全批次；伴随指标应用当前列筛选与搜索。</p></details>
       <div style="overflow:auto">
         <table class="t">
-          <thead><tr><th class="left">用户</th><th>Rate A → B</th><th>变化</th><th>TTI 占比 A / B</th><th>对小区的拖累</th><th class="left">伴随变化（同一表格筛选下）</th><th /></tr></thead>
+          <thead><tr><th class="left">用户</th><th>Rate A → B</th><th>变化</th><th>TTI 占比 A / B</th><th>速率变化贡献</th><th>占比变化贡献</th><th>总贡献</th><th class="left">伴随变化（当前列筛选与搜索）</th><th /></tr></thead>
           <tbody>
+            {!rows.length && <tr><td colspan="9" class="left muted">两侧有效 T396 数据不足，或 A 小区速率为零，无法计算贡献。</td></tr>}
             {rows.map((r) => (
               <tr>
                 <td class="left"><b>{r.userId}</b></td>
                 <td class="num"><span class="A">{fmt(r.rateA, 2)}</span> → <span class="B">{fmt(r.rateB, 2)}</span></td>
                 <td class={'num ' + (r.diffPct < 0 ? 'dn' : 'up')}>{fmtPct(r.diffPct)}</td>
                 <td class="num">{fmt(r.shareA, 1)}% / {fmt(r.shareB, 1)}%</td>
-                <td class={'num ' + (r.impact < 0 ? 'dn' : 'up')}>{fmtDelta(r.impact, 2, ' pt')}</td>
+                <td class="num">{fmtDelta(r.rateContributionPt, 2, ' pt')}</td>
+                <td class="num">{fmtDelta(r.shareContributionPt, 2, ' pt')}</td>
+                <td class={'num ' + (r.contributionPt < 0 ? 'dn' : 'up')}>{fmtDelta(r.contributionPt, 2, ' pt')}</td>
                 <td class="left">{breakdown.loading ? <span class="faint">计算中…</span> : companion(r.userId)}</td>
                 <td><button class="btn small" onClick={() => focus(r.userId, true)}>看图表</button> <button class="btn small" onClick={() => focus(r.userId, false)}>看明细</button></td>
               </tr>

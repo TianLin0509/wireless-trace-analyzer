@@ -6,22 +6,15 @@ import { Plot, COLORS, GRID } from './Plot.jsx';
 import { fmt, fmtInt, fmtPct, fmtDelta } from './fmt.js';
 import { describeFilter } from './filters.js';
 import { MAX_CHART_METRICS, MAX_CHART_USERS } from '../engine/config.js';
+import { metricInfo, smoothingWindow, movingAverage } from '../engine/metrics.js';
+import { TtiModal } from './TtiModal.jsx';
+import { ScopeNote } from './ScopeNote.jsx';
 
 const SKIP = new Set(['714_匹配状态', '714_来源行号']);
 // 单小区“叠加用户”时每个用户一种颜色
 const PALETTE = ['#2563eb', '#f97316', '#16a34a', '#dc2626', '#9333ea', '#0891b2', '#ca8a04', '#db2777', '#4b5563', '#65a30d'];
 const userColor = (i) => PALETTE[i % PALETTE.length];
 /** 滑动平均：多个用户的原始逐 TTI 值叠在一起看不清，叠加时画平滑后的趋势。 */
-function movingAvg(y, w) {
-  const out = new Array(y.length);
-  let sum = 0;
-  for (let i = 0; i < y.length; i++) {
-    sum += y[i];
-    if (i >= w) sum -= y[i - w];
-    out[i] = sum / Math.min(i + 1, w);
-  }
-  return out;
-}
 const OVERLAY_LEGEND = { orientation: 'h', x: 0, y: 1.02, yanchor: 'bottom', font: { size: 11 } };
 const isSingle = () => S.mode.value === 'single';
 const sideName = (k) => S.sideLabel(k);
@@ -85,7 +78,7 @@ export function ChartsTab() {
               <div class="g">{g}</div>
               {items.map((x) => (
                 <div class={'it' + (metrics.includes(x.c) ? ' on' : '')} onClick={() => toggleMetric(x.c)} title={x.numeric ? '数值：序列 + CDF' : '类别：取值分布'}>
-                  <span>{x.c}</span><span>{metrics.includes(x.c) ? '✓' : x.numeric ? '' : '类'}</span>
+                  <span title={metricInfo(x.c).explanation}>{metricInfo(x.c).title}</span><span>{metrics.includes(x.c) ? '✓' : x.numeric ? '' : '类'}</span>
                 </div>
               ))}
             </>
@@ -93,11 +86,13 @@ export function ChartsTab() {
         })}
       </div>
       <div style="min-width:0">
+        <ScopeNote />
         <div class="row" style="margin-bottom:10px;flex-wrap:wrap">
           <span class="chip scope">{users.length ? `用户：${users.slice(0, 5).join('、')}${users.length > 5 ? ` 等 ${users.length} 个` : ''}` : '范围：小区全量'}</span>
           {filters.map((f) => <span class="chip">{describeFilter(f)}</span>)}
           {v.search && <span class="chip">搜索：{v.search}</span>}
           <span class="sp" />
+          {isSingle() && mode === 'overlay' && <label class="smooth-control">平滑窗口 <select class="input" aria-label="平滑窗口" value={v.chartSmoothWindow || 'auto'} onChange={(e) => S.updateView({ chartSmoothWindow: e.target.value })}><option value="auto">自动（显示实际点数）</option><option value="1">不平滑，查看采样值</option><option value="5">5 个采样点</option><option value="20">20 个采样点</option></select></label>}
           {isSingle() ? (
             <div class="seg" title="分图：每个用户一张；叠加用户：所选用户画在同一张图里比较（先在左侧或“用户”页选中几个用户）">
               <button class={mode === 'split' ? 'on' : ''} onClick={() => S.updateView({ chartMode: 'split' })}>分图</button>
@@ -152,6 +147,9 @@ const overlayTitle = (r) => {
 function NumericCards({ m, mode }) {
   const rows = m.scopes;
   const [zoom, setZoom] = useState(null);
+  const [point, setPoint] = useState(null);
+  const info = metricInfo(m.metric);
+  const smoothing = S.view.value.chartSmoothWindow || 'auto';
   const present = ['A', 'B'].filter((k) => rows.some((r) => r.sides[k]));
   const userOverlay = isSingle() && mode === 'overlay' && rows.length > 1;
   if (isSingle() && !userOverlay) mode = 'split';
@@ -164,8 +162,8 @@ function NumericCards({ m, mode }) {
       rows.forEach((r, i) => {
         const s = r.sides.A;
         const y = s?.seq.y || [];
-        const w = Math.max(1, Math.round(y.length / 60));
-        data.push({ type: 'scatter', mode: 'lines', x: s?.seq.x || [], y: movingAvg(y, w), name: `${r.label}${rateText(r.key, 'A')}`, line: { color: userColor(i), width: 1.8 }, hovertemplate: `TTI %{x}<br>${m.metric} 滑动平均 %{y:.2f}<extra>${r.label}</extra>` });
+        const w = smoothingWindow(y.length, smoothing);
+        data.push({ type: 'scatter', mode: 'lines', x: s?.seq.x || [], y: movingAverage(y, w), customdata: y.map(() => ({ side: 'A', user: r.key })), name: `${r.label} · 窗口 ${w} 点${rateText(r.key, 'A')}`, line: { color: userColor(i), width: 1.8 }, hovertemplate: `代表 TTI %{x}<br>${m.metric} ${w === 1 ? '采样值' : '滑动平均'} %{y:.2f}<extra>${r.label}</extra>` });
       });
       const layout = subplotGrid(1, 1, [''], { xTitle: 'TTI', y: { title: { text: `${m.metric}（滑动平均）`, font: { size: 10 } } } });
       layout.showlegend = true;
@@ -179,21 +177,21 @@ function NumericCards({ m, mode }) {
         present.forEach((k) => {
           idx++;
           const s = r.sides[k];
-          data.push({ type: 'scatter', mode: 'lines', x: s?.seq.x || [], y: s?.seq.y || [], name: sideName(k), line: { color: COLORS[k], width: 1 }, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}`, hovertemplate: `TTI %{x}<br>${m.metric} %{y}<extra>${sideName(k)}</extra>` });
+          data.push({ type: 'scatter', mode: 'lines', x: s?.seq.x || [], y: s?.seq.y || [], customdata: (s?.seq.x || []).map((tti) => ({ side: k, user: r.key, tti })), name: sideName(k), line: { color: COLORS[k], width: 1 }, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}`, hovertemplate: `代表 TTI %{x}<br>${m.metric} %{y}<extra>${sideName(k)}</extra>` });
           titles.push(panelTitle(r, k));
         });
       } else {
         idx++;
         present.forEach((k) => {
           const s = r.sides[k];
-          data.push({ type: 'scatter', mode: 'lines', x: (s?.seq.y || []).map((_, i) => i + 1), y: s?.seq.y || [], name: sideName(k), legendgroup: k, showlegend: idx === 1, line: { color: COLORS[k], width: 1 }, opacity: 0.85, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}` });
+          data.push({ type: 'scatter', mode: 'lines', x: (s?.seq.y || []).map((_, i) => i + 1), y: s?.seq.y || [], customdata: (s?.seq.x || []).map((tti) => ({ side: k, user: r.key, tti })), name: sideName(k), legendgroup: k, showlegend: idx === 1, line: { color: COLORS[k], width: 1 }, opacity: 0.85, xaxis: `x${idx === 1 ? '' : idx}`, yaxis: `y${idx === 1 ? '' : idx}` });
         });
         titles.push(overlayTitle(r));
       }
     });
     const layout = subplotGrid(rows.length, cols, titles, { xTitle: mode === 'split' ? 'TTI（升序）' : '采样序号（各自按 TTI 升序）', y: { range: yr } });
     return { data, layout };
-  }, [m, mode, userOverlay]);
+  }, [m, mode, userOverlay, smoothing]);
   // CDF：分图时 A、B 共用同一横轴范围
   const cdf = useMemo(() => {
     const data = [], titles = [];
@@ -230,6 +228,7 @@ function NumericCards({ m, mode }) {
     const ax = key.split('.')[0];
     const n = ax === 'xaxis' ? 1 : Number(ax.slice(5));
     const side = present[(n - 1) % present.length];
+    if (!S.sides.value[side]?.columns.includes('tti')) { setZoom(null); return; }
     setZoom({ side, lo: ev[`${ax}.range[0]`], hi: ev[`${ax}.range[1]`] });
   };
   const applyZoom = () => {
@@ -238,10 +237,18 @@ function NumericCards({ m, mode }) {
     S.tableSide.value = zoom.side;
     S.tab.value = 'tbl';
   };
+  const inspectPoint = (ev) => {
+    const p = ev.points?.[0];
+    const meta = p?.customdata;
+    if (!p || !meta?.side) return;
+    const tti = meta.tti ?? p.x;
+    if (!S.sides.value[meta.side]?.columns.includes('tti')) return S.showToast('这个数据源没有 TTI 列，横轴是行序号，不能打开 TTI 上下文。');
+    setPoint({ sideKey: meta.side, tti, user: meta.user });
+  };
   return (
     <>
       <div class="chartcard">
-        <h5><span>{m.metric} · 序列</span><span class="faint" style="font-weight:400;font-size:11px">{userOverlay ? `${rows.length} 个用户叠加 · 滑动平均（同一 TTI 轴，看趋势；原始值用“分图”）` : isSingle() ? '纵轴范围一致 · 框选放大一段 TTI 可带到明细' : mode === 'split' ? 'A、B 纵轴范围一致 · 框选放大一段 TTI 可带到明细' : 'A、B 叠加'} · 每条最多 3000 点 · 拖右下角调大小</span></h5>
+        <h5><span title={info.explanation}>{info.title}{info.unit ? ` · ${info.unit}` : ''} · 序列</span><span class="muted" style="font-weight:400;font-size:11px">{userOverlay ? `${rows.length} 个用户叠加 · 各用户实际窗口见图例；窗口 1 为不平滑` : isSingle() ? '纵轴范围一致 · 框选 TTI 可带到明细' : mode === 'split' ? 'A、B 纵轴范围一致 · 框选 TTI 可带到明细' : 'A、B 按采样序号叠加（非同时刻对齐）'} · 点采样点查看代表 TTI · 每条最多 3000 点</span></h5>
         {zoom && (
           <div class="banner info" style="margin:4px 0">
             <span>已放大到 {isSingle() ? '' : `方案 ${zoom.side} 的 `}TTI {Math.ceil(zoom.lo)} – {Math.floor(zoom.hi)}</span><span class="sp" />
@@ -249,9 +256,11 @@ function NumericCards({ m, mode }) {
             <button class="btn small" onClick={() => setZoom(null)}>忽略</button>
           </div>
         )}
-        <Plot data={seq.data} layout={seq.layout} height={h} onRelayout={mode === 'split' && !userOverlay ? onRelayout : undefined} />
+        <Plot data={seq.data} layout={seq.layout} height={h} onClick={inspectPoint} onRelayout={mode === 'split' || userOverlay ? onRelayout : undefined} />
+        <div class="muted" style="font-size:11px">数据较多时按固定间隔抽取原始记录；未平滑采样点保留实际值，滑动平均仅用于看趋势。点击按该点的 TTI 查看上下文。{info.explanation}</div>
         <StatTable m={m} />
       </div>
+      {point && S.sides.value[point.sideKey] && <TtiModal side={S.sides.value[point.sideKey]} sideKey={point.sideKey} tti={point.tti} focusUser={point.user === '__cell__' ? null : point.user} columns={S.sides.value[point.sideKey].visibleColumns} onClose={() => setPoint(null)} />}
       <div class="chartcard">
         <h5><span>{m.metric} · CDF</span><span class="faint" style="font-weight:400;font-size:11px">{userOverlay ? `${rows.length} 个用户叠加` : isSingle() ? '横轴范围一致' : mode === 'split' ? 'A、B 横轴范围一致' : 'A、B 叠加'}</span></h5>
         <Plot data={cdf.data} layout={cdf.layout} height={h} />

@@ -10,11 +10,13 @@ import { ChartsTab } from './ChartsTab.jsx';
 import { QualityTab } from './QualityTab.jsx';
 import { SingleOverview } from './SingleOverview.jsx';
 import { UserTable } from './UserTable.jsx';
+import { DiagnosisNote } from './DiagnosisNote.jsx';
+import { ReportButton } from './ReportButton.jsx';
 import { ViewMenu } from './ViewMenu.jsx';
 import { fmtSec, fmtBytes } from './fmt.js';
 
 export function Workspace() {
-  const [railOpen, setRailOpen] = useState(true);
+  const [railOpen, setRailOpen] = useState(() => window.innerWidth > 900);
   const single = S.mode.value === 'single';
   const tabs = single ? [['sum', '概览'], ['usr', '用户'], ['tbl', '明细'], ['cht', '图表'], ['qa', '数据质量']] : [['sum', '结论'], ['tbl', '明细'], ['cht', '图表'], ['qa', '数据质量']];
   const tab = tabs.some(([k]) => k === S.tab.value) ? S.tab.value : 'sum';
@@ -34,6 +36,7 @@ export function Workspace() {
           </div>
           <div class="content" id="content">
             <PartialBanner />
+            <DiagnosisNote />
             {tab === 'sum' && (single ? (ready ? <SingleOverview /> : <Waiting what="概览" />) : <SummaryTab />)}
             {tab === 'usr' && (ready ? <UserTable /> : <Waiting what="用户指标" />)}
             {tab === 'tbl' && (ready ? <DetailTab /> : <Waiting what="明细" />)}
@@ -106,6 +109,7 @@ function TopBar({ onToggleRail }) {
     <div class="top">
       <button class="btn icon" title="显示 / 隐藏用户栏" onClick={onToggleRail}>☰</button>
       <div class="logo"><Logo /></div><span class="brand">{single ? '单小区分析' : 'Trace A/B'}</span>
+      <span class="ver">v{__APP_VERSION__}</span>
       {single ? (
         <div class="srcchip" title={S.dirs.A.value?.fullPath || sel.A?.contextLabel || ''}><span class="tx">{sel.A ? batchLabel(sel.A) : '未选择'}</span></div>
       ) : (
@@ -146,6 +150,7 @@ function TopBar({ onToggleRail }) {
         )}
       </div>
       <ViewMenu />
+      <ReportButton />
     </div>
   );
 }

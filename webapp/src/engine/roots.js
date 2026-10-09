@@ -64,6 +64,22 @@ export async function ensureRead(handle) {
   return (await handle.requestPermission({ mode: 'read' })) === 'granted';
 }
 
+/** 仅查询，不自动触发授权弹窗。记住目录不等于权限永久有效。 */
+export async function pathAccess(path) {
+  if (!normalizePastedPath(path)) return { state: 'empty', text: '粘贴路径后解析；也可选择或拖入文件夹。' };
+  await loadRoots();
+  const hit = findRoot(path);
+  if (!hit) return { state: 'first', text: '首次使用这个目录：解析时选择一次共享总目录。' };
+  try {
+    const permission = await hit.root.handle.queryPermission({ mode: 'read' });
+    return permission === 'granted'
+      ? { state: 'granted', text: `已授权 ${hit.root.path}：此路径可直接解析。` }
+      : { state: 'renew', text: `已记住 ${hit.root.path}，需要重新授权。` };
+  } catch {
+    return { state: 'unavailable', text: '已记住的目录暂不可访问，请重新选择文件夹。' };
+  }
+}
+
 /** 沿目录句柄逐级找子目录；名字大小写不一致时按不区分大小写再找一遍（Windows 习惯）。 */
 export async function descend(handle, names) {
   let cur = handle;

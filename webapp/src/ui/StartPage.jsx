@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'preact/hooks';
 import * as S from '../store.js';
 import { pickDirectory, scanDirectoryHandle, scanFileList, supportsDirectoryHandle, ensurePermission, normalizePastedPath, lastSegment, directoryFromDrop } from '../engine/fs.js';
-import { buildCatalog, defaultSelection, matchSameCellBatches, batchLabel } from '../engine/scan.js';
-import { loadRoots, listRoots, findRoot, suggestRoot, saveRoot, forgetRoot, ensureRead, descend, ancestors } from '../engine/roots.js';
+import { buildCatalog, defaultSelection, matchSameCellBatches, batchLabel, restoreTraceChoices } from '../engine/scan.js';
+import { loadRoots, listRoots, findRoot, suggestRoot, saveRoot, forgetRoot, ensureRead, descend, ancestors, pathAccess } from '../engine/roots.js';
 import { startRun } from '../pipeline.js';
 import { pingHelper, scanPath, HELPER_DOWNLOAD } from '../engine/helper.js';
 import { listAll, remove } from '../persist.js';
 import { fmtBytes } from './fmt.js';
 import { Logo } from './icons.jsx';
+import { SourceChoice } from './SourceChoice.jsx';
 
 const PATH_KEY = (side) => `trace-path-${side}`;
 export const savedPath = (side) => { try { return localStorage.getItem(PATH_KEY(side)) || ''; } catch { return ''; } };
@@ -87,6 +88,7 @@ export function StartPage() {
       setHint(null);
       const name = picked.handle?.name || (picked.fileList?.[0]?.webkitRelativePath || '').split('/')[0];
       await loadSide(side, picked, path);
+      if (!path) { setPath(side, ''); savePath(side, ''); }
       if (path && name && lastSegment(path).toLowerCase() !== name.toLowerCase()) {
         S.showToast(`注意：粘贴的是「${lastSegment(path)}」，实际选中的是「${name}」。如果选错了，点“更换”重选。`, 6000);
       }
@@ -192,7 +194,7 @@ export function StartPage() {
   const pending = (side) => {
     const p = normalizePastedPath(paths[side]);
     const d = S.dirs[side].value;
-    return p && (!d?.catalog || (d.fullPath && d.fullPath.toLowerCase() !== p.toLowerCase()));
+    return p && (!d?.catalog || d.fullPath?.toLowerCase() !== p.toLowerCase());
   };
   const canStart = !busy && (single ? !!sel.A || pending('A') : !!(sel.A || sel.B) || sidesUsed.some(pending));
 
@@ -251,7 +253,10 @@ export function StartPage() {
         if (viaHelper(side)) await loadSide(side, { path: r.paths[side] });
         else if (h) await loadSide(side, { handle: h }, r.paths?.[side] || '');
       }
-      const find = (side) => S.dirs[side].value?.catalog.batches.find((b) => b.batchId === r.batchIds?.[side]) || null;
+      const find = (side) => {
+        const b = S.dirs[side].value?.catalog.batches.find((b) => b.batchId === r.batchIds?.[side]);
+        return b ? restoreTraceChoices(b, r.traceChoices?.[side]) : null;
+      };
       const next = { A: find('A'), B: r.mode === 'single' ? S.selection.value.B : find('B') };
       if (!next.A && !next.B) throw new Error('原来的批次已不在文件夹中（文件可能被移动或删除）。');
       S.selection.value = next;
@@ -270,7 +275,7 @@ export function StartPage() {
   const card = (side) => (
     <SideCard side={side} single={single} filters={filters[side]} setFilters={(f) => setFilters({ ...filters, [side]: f })}
       path={paths[side]} setPath={(p) => setPath(side, p)} onResolve={(p) => resolvePath(side, p)} onPick={() => pick(side)}
-      onDrop={(e) => drop(side, e)} onSameAsA={side === 'B' ? sameAsA : null} />
+      roots={roots} useHelper={useHelper} onDrop={(e) => drop(side, e)} onSameAsA={side === 'B' ? sameAsA : null} />
   );
 
   return (
@@ -285,7 +290,7 @@ export function StartPage() {
       {hint && (
         <div class="pastehint">
           {hint.first
-            ? <><b>首次使用这个目录，需要授权一次（以后不用）。</b>已复制 <code>{hint.copied}</code>。在弹出的窗口里：点顶部地址栏 → <kbd>Ctrl</kbd>+<kbd>V</kbd> → <kbd>回车</kbd> → 点“选择文件夹”；浏览器问是否允许时点“允许”（有“每次访问时都允许”就选它）。</>
+            ? <><b>首次使用这个目录，需要选择并授权总目录。</b>已复制 <code>{hint.copied}</code>。在弹出的窗口里：点顶部地址栏 → <kbd>Ctrl</kbd>+<kbd>V</kbd> → <kbd>回车</kbd> → 点“选择文件夹”；浏览器问是否允许时点“允许”（有“每次访问时都允许”就选它）。权限有效时，下次直接解析。</>
             : <><b>路径已复制。</b>在弹出的窗口里：点一下顶部地址栏（或底部“文件夹”输入框）→ <kbd>Ctrl</kbd>+<kbd>V</kbd> → <kbd>回车</kbd> → 点“选择文件夹”。</>}
           <div class="faint" style="font-size:12px;margin-top:2px">{single ? '' : `方案 ${hint.side}：`}{hint.path}</div>
         </div>
@@ -323,7 +328,8 @@ export function StartPage() {
             {!single && <button class="btn" onClick={match} disabled={!S.dirs.A.value || !S.dirs.B.value}>同小区一键匹配</button>}
             <span class="sp" />
             {!single && <button class="btn" disabled={!S.dirs.A.value || !S.dirs.B.value} onClick={() => (S.page.value = 'kpi')}>批量 KPI（多小区）</button>}
-            <button class="btn primary" disabled={!canStart} onClick={start}>{busy ? '正在准备…' : '开始分析'}</button>
+            {!single && !(sel.A && sel.B) && (sel.A || sel.B) && !sidesUsed.some(pending) && <span class="muted">只有一侧数据，本次不会形成 A/B 对比。</span>}
+            <button class="btn primary" disabled={!canStart} onClick={start}>{busy ? '正在准备…' : !single && !(sel.A && sel.B) && (sel.A || sel.B) && !sidesUsed.some(pending) ? `仅分析 ${sel.A ? 'A' : 'B'}` : '开始分析'}</button>
           </div>
           {shown.length > 0 && (
             <div class="recent" style="margin-top:18px">
@@ -343,10 +349,10 @@ export function StartPage() {
           <div class="envnote">
             {supportsDirectoryHandle() ? (
               <>
-                粘贴路径即可解析：每个总目录（如 <code>\\服务器\共享</code>）只在第一次需要在窗口里授权一次，之后它下面的任何路径直接解析。计算全部在本机浏览器内完成，数据不上传。
+                记住总目录（如 <code>\\服务器\共享</code>）后，权限有效时它下面的路径可直接解析；权限失效时会请你重新授权。计算全部在本机浏览器内完成，数据不上传。
                 {roots.length > 0 && (
                   <div style="margin-top:6px">已授权：{roots.map((r) => (
-                    <span class="chip" style="margin:2px 4px 0 0">{r.path}<button title="取消授权" onClick={() => forgetRoot(r.path).then(refreshRoots)}>×</button></span>
+                    <span class="chip" style="margin:2px 4px 0 0">{r.path}<button title="忘记此目录的记录（浏览器权限可在网站设置中撤销）" onClick={() => forgetRoot(r.path).then(refreshRoots)}>×</button></span>
                   ))}</div>
                 )}
               </>
@@ -358,23 +364,31 @@ export function StartPage() {
   );
 }
 
-function PathBox({ side, path, setPath, onResolve, busy }) {
+function PathBox({ side, path, setPath, onResolve, busy, roots, useHelper }) {
+  const [access, setAccess] = useState(null);
+  useEffect(() => {
+    let active = true;
+    if (useHelper) { setAccess({ state: 'helper', text: '高级方式：由本机助手读取。' }); return; }
+    if (!supportsDirectoryHandle()) { setAccess({ state: 'fallback', text: '当前浏览器使用选择窗口读取文件夹。' }); return; }
+    pathAccess(path).then((x) => active && setAccess(x), () => active && setAccess({ state: 'unavailable', text: '目录记录读取失败，请选择文件夹。' }));
+    return () => { active = false; };
+  }, [path, roots, useHelper]);
   const go = () => {
     const p = normalizePastedPath(path);
     if (!p || busy) return;
     onResolve(p);
   };
   return (
-    <div class="row" style="gap:6px">
+    <div class="path-box"><div class="row" style="gap:6px">
       <input class="input" style="flex:1;min-width:0;font-family:var(--mono);font-size:12px" placeholder="粘贴文件夹路径，如 \\100.100.97.83\cellDT\基线_v3"
         value={path} onInput={(e) => setPath(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && go()}
         aria-label={`方案 ${side} 文件夹路径`} title="粘贴路径后回车或点“解析”：列出这个文件夹里的小区批次" />
-      <button class="btn" disabled={!String(path || '').trim() || busy} onClick={go}>解析</button>
-    </div>
+      <button class="btn" disabled={!String(path || '').trim() || busy} onClick={go}>{access?.state === 'renew' ? '重新授权' : '解析'}</button>
+    </div><div class={'path-status ' + (access?.state || '')} role="status">{access?.text || '正在检查目录授权…'}</div></div>
   );
 }
 
-function SideCard({ side, single, filters, setFilters, path, setPath, onResolve, onPick, onDrop, onSameAsA }) {
+function SideCard({ side, single, filters, setFilters, path, setPath, onResolve, onPick, onDrop, onSameAsA, roots, useHelper }) {
   const [over, setOver] = useState(false);
   const d = S.dirs[side].value;
   const sel = S.selection.value[side];
@@ -396,14 +410,14 @@ function SideCard({ side, single, filters, setFilters, path, setPath, onResolve,
           <>
             <b>{d?.scanning ? '正在扫描文件夹…（网络盘可能要几秒）' : title}</b>
             {!single && <span class="muted" style="font-size:12px">{side === 'A' ? '基准方案' : '对比方案'}</span>}
-            <PathBox side={side} path={path} setPath={setPath} onResolve={onResolve} busy={d?.scanning} />
+            <PathBox side={side} path={path} setPath={setPath} onResolve={onResolve} busy={d?.scanning} roots={roots} useHelper={useHelper} />
             <div class="row" style="gap:6px"><button class="btn" onClick={onPick} disabled={d?.scanning}>选择文件夹…</button>{onSameAsA && S.dirs.A.value?.catalog ? <button class="btn" onClick={onSameAsA} title="A/B 在同一个目录下时用：自动配同小区的另一个批次">与 A 同一文件夹</button> : <span class="faint" style="font-size:12px">或从资源管理器把文件夹拖到这里</span>}</div>
           </>
         ) : (
           <>
             <div class="row"><b style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={d.fullPath || d.rootName}>📁 {d.rootName}</b><span class="sp" /><button class="btn small" onClick={onPick}>选择其他文件夹</button></div>
             {d.fullPath && <span class="faint" style="font-size:11px;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={d.fullPath}>{d.fullPath}</span>}
-            <PathBox side={side} path={path} setPath={setPath} onResolve={onResolve} busy={d?.scanning} />
+            <PathBox side={side} path={path} setPath={setPath} onResolve={onResolve} busy={d?.scanning} roots={roots} useHelper={useHelper} />
             <span class="muted" style="font-size:12px">{cat.fileCount} 个跟踪文件 · {cat.batches.length} 个批次{cases.some((c) => c.caseKey) ? ` · ${cases.filter((c) => c.caseKey).length} 个 Case` : ''}{d.truncated ? ' · 文件过多已截断' : ''}</span>
             {cases.some((c) => c.caseKey) && (
               <div class="row">
@@ -424,6 +438,7 @@ function SideCard({ side, single, filters, setFilters, path, setPath, onResolve,
               ))}
             </select>
             {sel && <span class="faint" style="font-size:11px" title={sel.directory}>{sel.contextLabel || sel.directory}{sel.ignoredFragments ? ` · 忽略 ${sel.ignoredFragments} 个后续分片` : ''}</span>}
+            <SourceChoice side={side} batch={sel} />
           </>
         )}
       </div>

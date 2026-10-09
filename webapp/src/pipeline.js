@@ -95,6 +95,7 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
       S.sources.value = {};
       S.qualityAck.value = false;
       if (!keepUsers) S.users.value = [];
+      S.diagnosis.value = null;
       S.page.value = 'work';
     }
     S.sides.value = { A: null, B: null };
@@ -255,6 +256,7 @@ async function rememberRecent() {
     handles: { A: S.dirs.A.value?.handle || null, B: single ? null : S.dirs.B.value?.handle || null },
     via: { A: S.dirs.A.value?.via || null, B: single ? null : S.dirs.B.value?.via || null },
     batchIds: { A: sel.A?.batchId || null, B: sel.B?.batchId || null },
+    traceChoices: Object.fromEntries(['A', 'B'].map((side) => [side, Object.fromEntries(Object.entries(sel[side]?.traces || {}).filter(([, t]) => t.selected).map(([id, t]) => [id, t.selected.relPath]))])),
     viewId: v.id,
     viewName: v.name,
   };

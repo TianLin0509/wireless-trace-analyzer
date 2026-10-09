@@ -35,7 +35,7 @@ with sync_playwright() as p:
     tabs = pg.locator(".tabs button").all_inner_texts()
     checks["标签页：概览/用户/明细/图表/数据质量"] = tabs[:5] == ["概览", "用户", "明细", "图表", "数据质量"]
     checks["顶栏不出现 A/B"] = pg.locator(".top .k.b").count() == 0 and "单小区分析" in pg.inner_text(".top")
-    cards = {pg.locator(".kcard .nm span").nth(i).inner_text(): pg.locator(".kcard").nth(i).locator(".big").first.inner_text() if pg.locator(".kcard").nth(i).locator(".big").count() else "" for i in range(pg.locator(".kcard").count())}
+    cards = {pg.locator(".kcard").nth(i).locator(".nm span").first.inner_text(): pg.locator(".kcard").nth(i).locator(".big").first.inner_text() if pg.locator(".kcard").nth(i).locator(".big").count() else "" for i in range(pg.locator(".kcard").count())}
     checks["概览卡片 ≥ 8 张（含 MCS、BLER、截包、Rank2、构成）"] = len(cards) >= 8 and any("MCS 均值" in k for k in cards) and any("BLER" in k for k in cards)
     pg.wait_for_selector(".section .finding, .section .banner.info", timeout=60000)
     n_find = pg.locator(".finding").count()
@@ -102,7 +102,7 @@ with sync_playwright() as p:
     ab_recent = pg.locator(".recent").count() and pg.inner_text(".recent") or ""
     checks["A/B 页不混入单小区记录"] = batch["cell"] not in ab_recent or "vs" in ab_recent
     pg.evaluate(f"() => {{ const S = window.__trace.S; const b = S.dirs.A.value.catalog.batches.find((x) => x.batchId === {json.dumps(batch['id'])}); S.selection.value = {{ A: b, B: null }}; }}")
-    pg.get_by_role("button", name="开始分析").click()
+    pg.get_by_role("button", name="仅分析 A").click()
     pg.wait_for_function(WAIT, timeout=300000)
     pg.wait_for_timeout(1500)
     ab2 = pg.evaluate("() => { const S = window.__trace.S; return { users: S.t396.value.rows.length, rate: S.t396.value.cellRateA, rows: S.sides.value.A.anchorRows }; }")

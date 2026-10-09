@@ -200,6 +200,7 @@ kbd { font: 12px var(--mono); background: #fff; border: 1px solid #d6dae0; borde
 
 @media (max-width: 900px) {
   .body { grid-template-columns: 1fr; }
+  .body.rail-closed { grid-template-columns: 1fr; }
   .rail { position: fixed; top: 52px; bottom: 0; left: 0; width: 286px; z-index: 25; box-shadow: 4px 0 20px rgba(0,0,0,.12); }
   .body.rail-closed .rail { display: none; }
   .cgrid { grid-template-columns: 1fr; }
@@ -236,3 +237,49 @@ code { font-family: var(--mono); font-size: 0.92em; background: #f3f4f6; padding
 .utable tbody tr.sel { background: #f1f8f5; }
 .utable td.bad { background: #fff3ec; font-weight: 600; }
 .utable .cb { display: inline-block; vertical-align: -2px; }
+
+/* v1.5：先看范围和线索，保持现有工作台及默认分图。 */
+.scope-note { padding: 8px 12px; margin-bottom: 12px; border: 1px solid #dce5ef; border-radius: 10px; background: #f6f9fc; color: #475569; font-size: 12px; }
+.path-status { font-size: 11px; color: var(--soft); margin-top: 3px; overflow-wrap: anywhere; }
+.path-status.granted { color: var(--brand); }
+.path-status.renew, .path-status.unavailable { color: var(--warn); }
+.path-box { min-width: 0; }
+.source-choice { border-top: 1px solid var(--line); padding-top: 8px; font-size: 12px; }
+.source-choice summary { cursor: pointer; color: var(--brand); font-weight: 600; }
+.source-choice p { margin: 6px 0; }
+.trace-choice { margin: 8px 0; }
+.trace-choice label { display: flex; align-items: flex-start; gap: 5px; margin-top: 5px; }
+.trace-choice span { overflow-wrap: anywhere; min-width: 0; }
+.contribution-help, .rule-findings, .more-findings { font-size: 12px; margin: 8px 0; color: var(--soft); }
+.contribution-help summary, .rule-findings summary, .more-findings summary { cursor: pointer; color: var(--brand); }
+.health-section { margin-top: 14px; }
+.check-coverage { font-size: 12px; color: var(--soft); margin: 8px 0; }
+.user-finding { border-left-color: #f59e0b; }
+.finding-line { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line2); }
+.finding-line .muted { font-size: 11px; }
+.diagnosis-note { align-items: flex-start; font-size: 12px; }
+.smooth-control { font-size: 12px; display: inline-flex; gap: 5px; align-items: center; }
+.top .srcchip { max-width: 240px; }
+.chartcard h5 { flex-wrap: wrap; }
+@media (min-width: 1500px) { .primary-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+@media (max-width: 1150px) { .top .srcchip { max-width: 145px; } .prog .bar { display: none; } .top { gap: 6px; } }
+@media (max-width: 700px) {
+  .start .top { height: auto; min-height: 52px; flex-wrap: wrap; padding: 10px; }
+  .startcard { padding: 14px; }
+  .startcard > .row, .headline, .sh { flex-wrap: wrap; }
+  .startcard > div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+  .start .inner { margin: 16px auto; }
+  .pick { padding: 10px; }
+  .kgrid { grid-template-columns: 1fr 1fr; }
+  .work { grid-template-rows: auto 1fr; }
+  .work > .top { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px; }
+  .work .top .srcchip { max-width: 135px; }
+  .work .top .prog { max-width: 100%; white-space: normal; }
+  .content { padding: 10px; }
+  .headline .muted { overflow-wrap: anywhere; }
+  .banner, .user-finding > .row, .finding-line .row { flex-wrap: wrap; }
+  .plotbox { min-width: 0; }
+  .tabs { flex-wrap: wrap; }
+  .errbox { max-width: calc(100vw - 24px); right: 12px; }
+}
+@media (max-width: 420px) { .kgrid { grid-template-columns: 1fr; } .modetabs button { padding: 10px; } }

@@ -2,7 +2,7 @@ import { useState } from 'preact/hooks';
 import * as S from '../store.js';
 import { fmt, fmtPct } from './fmt.js';
 
-const sortModes = { impact: '按影响', share: '按占比', diff: '按变化', id: '按编号' };
+const sortModes = { impact: '按贡献', share: '按占比', diff: '按变化', id: '按编号' };
 const singleSortModes = { share: '按占比', rateLow: '速率从低到高', rateHigh: '速率从高到低', id: '按编号' };
 
 export function UserRail() {
@@ -16,7 +16,7 @@ export function UserRail() {
   let rows = cmp?.rows || [];
   if (q) rows = rows.filter((r) => r.userId.includes(q.trim()));
   rows = [...rows].sort((a, b) => {
-    if (mode === 'impact') return (a.impact ?? 0) - (b.impact ?? 0) || b.maxShare - a.maxShare;
+    if (mode === 'impact') return (a.contributionPt ?? 0) - (b.contributionPt ?? 0) || b.maxShare - a.maxShare;
     if (mode === 'share') return b.maxShare - a.maxShare;
     if (mode === 'diff') return (a.diffPct ?? 0) - (b.diffPct ?? 0);
     if (mode === 'rateLow') return (a.rateA ?? Infinity) - (b.rateA ?? Infinity);
@@ -48,7 +48,7 @@ export function UserRail() {
           </div>
         )}
         {rows.map((r) => (
-          <div class={'urow' + (selected.has(r.userId) ? ' sel' : '')} onClick={() => toggle(r.userId)} title={single ? `TTI 占比 ${fmt(r.shareA, 1)}%` : `TTI 占比 A ${fmt(r.shareA, 1)}% / B ${fmt(r.shareB, 1)}%；对小区速率拖累 ${fmt(r.impact, 2)} pt`}>
+          <div class={'urow' + (selected.has(r.userId) ? ' sel' : '')} onClick={() => toggle(r.userId)} title={single ? `TTI 占比 ${fmt(r.shareA, 1)}% · T396 全批次` : `TTI 占比 A ${fmt(r.shareA, 1)}% / B ${fmt(r.shareB, 1)}%；全批次速率变化贡献 ${fmt(r.contributionPt, 2)} pt（非因果）`}>
             <span class="cb" />
             <div>
               <div class="id">{r.userId}</div>
