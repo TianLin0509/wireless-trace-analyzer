@@ -13,6 +13,11 @@ B_DIR = os.path.join(root, "场景B")
 checks, notes = {}, {}
 
 
+def nk(d):
+    """真实形态数据里 ambr 写成 19980000xx，归一回 50xx 便于对照标准答案。"""
+    return {('50' + k[-2:] if k.startswith('1998000') else k): v for k, v in d.items()}
+
+
 def scroll_info(pg):
     return pg.evaluate("() => { const c = document.querySelector('#content'); return { sh: c.scrollHeight, ch: c.clientHeight }; }")
 
@@ -52,29 +57,32 @@ with sync_playwright() as p:
     si = head_idx = None
     head0 = pg.evaluate("() => [...document.querySelectorAll('.diag .section thead th')].map((th) => th.textContent.trim())")
     si = head0.index("短板")
-    weak = {r[0]: r[si] for r in rows if len(r) > si}
+    weak = nk({r[0]: r[si] for r in rows if len(r) > si})
     notes["速率拆解短板"] = weak
     pi = head0.index("PDCCH送达")
-    pd_ = {r[0]: float(r[pi]) for r in rows if len(r) > pi and r[pi] not in ("—", "")}
+    pd_ = nk({r[0]: float(r[pi]) for r in rows if len(r) > pi and r[pi] not in ("—", "")})
     checks["5006 PDCCH 送达率最低（DTX 注入）"] = bool(pd_) and min(pd_, key=pd_.get) == "5006"
     head = pg.evaluate("() => [...document.querySelectorAll('.diag .section thead th')].map((th) => th.textContent.trim())")
     di = head.index("数据受限") if "数据受限" in head else None
-    data_lim = {r[0]: r[di] for r in rows if di is not None and len(r) > di}
+    data_lim = nk({r[0]: r[di] for r in rows if di is not None and len(r) > di})
     notes["数据受限"] = data_lim
     checks["5005 CQI 虚高 → 短板含每RB每层比特或译码"] = any(k in weak.get("5005", "") for k in ("每RB每层比特", "初传译码成功"))
     checks["5008 小包 → 数据受限最高"] = bool(data_lim) and max(data_lim, key=lambda u: float(data_lim[u].rstrip('%') or 0)) == "5008"
     checks["速率拆解一屏（无纵向滚动）"] = s["sh"] <= s["ch"] + 4
     s = visit(pg, "链路诊断", "s2-link", ".diag .section tbody tr")
     flags = pg.evaluate("() => Object.fromEntries([...document.querySelectorAll('.diag .section tbody tr')].map((tr) => [tr.children[0].textContent.trim(), [...tr.querySelectorAll('.tag')].map((t) => t.textContent)]))")
+    flags = nk(flags)
     notes["链路判读"] = flags
     checks["5005 OLLA 深负"] = "OLLA 深负" in flags.get("5005", [])
     bl = pg.evaluate("() => { const h = [...document.querySelectorAll('.diag .section thead th')].map((th) => th.textContent.trim()); const i = h.indexOf('BLER'); return Object.fromEntries([...document.querySelectorAll('.diag .section tbody tr')].map((tr) => [tr.children[0].textContent.trim(), parseFloat(tr.children[i].textContent)])); }")
+    bl = nk(bl)
     notes["初传 BLER"] = bl
     checks["5007 快衰落 → 初传 BLER 最高"] = bool(bl) and max(bl, key=lambda k: bl[k] if bl[k] == bl[k] else -1) == "5007"
     checks["OLLA 深负只标少数用户（≤ 3 个）"] = sum("OLLA 深负" in v for v in flags.values()) <= 3
     checks["链路诊断一屏"] = s["sh"] <= s["ch"] + 4
     s = visit(pg, "异常事件", "s3-events", ".diag-top.evt, .diag .banner.info", 180000)
     mat = pg.evaluate("() => Object.fromEntries([...document.querySelectorAll('.diag-top.evt tbody tr')].map((tr) => [tr.children[0].textContent.trim(), [...tr.children].slice(1).map((td) => td.textContent.trim())]))")
+    mat = nk(mat)
     notes["事件矩阵（NACK/DTX/失败/MCS/OLLA/合计）"] = mat
     checks["5006 有连续 DTX 事件"] = bool(mat.get("5006")) and mat["5006"][1] not in ("", "0")
     checks["异常事件一屏"] = s["sh"] <= s["ch"] + 4
@@ -102,7 +110,7 @@ with sync_playwright() as p:
     pg.wait_for_timeout(1500)
     s = visit(pg, "速率拆解", "ab1-rate", ".diag .section tbody tr")
     ab = pg.evaluate("() => [...document.querySelectorAll('.diag .section tbody tr')].map((tr) => [...tr.children].map((td) => td.textContent.trim()))")
-    main = {r[0]: r[-1] for r in ab}
+    main = nk({r[0]: r[-1] for r in ab})
     notes["A/B 主因"] = main
     side_cards = pg.locator(".diag-side .kcard").all_inner_texts()
     notes["A/B 侧栏"] = side_cards
@@ -118,6 +126,7 @@ with sync_playwright() as p:
     pg.wait_for_timeout(4000)
     pg.screenshot(path=f"{out}/ab3-events-B.png")
     matB = pg.evaluate("() => Object.fromEntries([...document.querySelectorAll('.diag-top.evt tbody tr')].map((tr) => [tr.children[0].textContent.trim(), [...tr.children].slice(1).map((td) => td.textContent.trim())]))")
+    matB = nk(matB)
     notes["B 事件矩阵"] = matB
     checks["B：5003 有连续 NACK 或 MCS 骤降事件"] = bool(matB.get("5003")) and (matB["5003"][0] not in ("", "0") or matB["5003"][3] not in ("", "0"))
     checks["B：出现连续调度失败事件"] = any(v[2] not in ("", "0") for v in matB.values())
