@@ -34,7 +34,7 @@ with sync_playwright() as p:
     page.on('pageerror', lambda e: errors.append(str(e)))
     page.goto(url + '?picker=input&debug')
     page.wait_for_selector('.modetabs')
-    checks['可见版本为 1.5.0'] = page.locator('.ver').inner_text() == 'v1.5.0'
+    checks['可见版本为 1.6.0'] = page.locator('.ver').inner_text() == 'v1.6.0'
     pick(page, 0, dir_a)
     checks['仅一侧时明确显示仅分析 A'] = page.get_by_role('button', name='仅分析 A').count() == 1
     pick(page, 1, dir_b)
@@ -71,7 +71,7 @@ with sync_playwright() as p:
     ab_report = f'{out}/20261009-AB分析样例报告-codex.html'
     dl.value.save_as(ab_report)
     text = Path(ab_report).read_text(encoding='utf-8-sig')
-    checks['AB 报告有范围、真实文件与贡献拆分'] = all(x in text for x in ['1.5.0', 'T396 全批次', chosen, '占比变化贡献', '跳过坏行'])
+    checks['AB 报告有范围、真实文件与贡献拆分'] = all(x in text for x in ['1.6.0', 'T396 全批次', chosen, '占比变化贡献', '跳过坏行'])
 
     page.get_by_role('button', name='更换数据').click()
     page.locator('.modetabs button', has_text='单小区分析').click()

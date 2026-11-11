@@ -9,6 +9,8 @@ import { batchLabel } from './scan.js';
 import { toFullPath } from './fs.js';
 import { describeFilter } from '../ui/filters.js';
 import { loadPlotly } from '../ui/Plot.jsx';
+import { sideEvidence } from '../ui/ConcludeTab.jsx';
+import { concludeAb, commonCauses } from './conclude.js';
 
 export const escapeHtml = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const number = (x, digits = 2) => x == null || !Number.isFinite(Number(x)) ? '—' : Number(x).toLocaleString('zh-CN', { maximumFractionDigits: digits });
@@ -32,6 +34,19 @@ function cardHtml(c) {
   return `<article class="card"><b>${escapeHtml(c.label)}</b><div class="value">${escapeHtml(text)} ${escapeHtml(c.unit || '')}</div>${distribution(a, c.b)}${bars}${c.cats ? table(['取值', '占比'], c.cats.map((x) => [x.value, number(x.share, 1) + '%'])) : ''}<p class="muted">样本 ${number(a.n, 0)}${c.b ? ' / ' + number(c.b.n, 0) : ''}${c.dtx != null ? ' · DTX 剔除 ' + number(c.dtx, 0) : ''}</p></article>`;
 }
 
+/** 诊断结论段：单小区为逐用户初判；A/B 为小区一句话 + 逐用户主因。规则线索，不是确认根因。 */
+function diagnosisHtml(d, single) {
+  if (!d) return '';
+  const note = '<p class="muted">综合速率拆解（七因子恒等式）、受限类型、链路判读与异常事件的规则初判，是定位线索，不是确认根因；需在时间轴或其他跟踪号上核实。</p>';
+  if (single) {
+    const common = d.common?.length ? `<p>小区共性问题（≥ 60% 用户都有）：${escapeHtml(d.common.map((c) => `${c.label}（${c.users} 个用户）`).join('、'))}</p>` : '';
+    const set = new Set((d.common || []).map((c) => c.id));
+    return `<h2>诊断结论</h2>${note}${common}${table(['用户', '初传次数', '初判', '证据'], d.list.map((u) => { const own = u.causes.filter((c) => !set.has(c.id)); return [u.user, number(u.tries, 0), own.map((c) => c.label).join('、') || '—', own.slice(0, 2).map((c) => c.evidence).filter(Boolean).join('；') || '—']; }))}`;
+  }
+  const ab = d.ab;
+  return `<h2>诊断结论</h2>${note}<div class="notice">${escapeHtml(ab.lines.join('；') || '样本不足，无法拆解')}</div>${table(['用户', '拆解变化', '主因', '主因贡献', 'B/A 比值'], ab.users.map((u) => [u.user, number(u.total, 1) + '%', u.main.label, number(u.main.contrib, 1) + ' 点', number(u.main.ratio, 3)]))}`;
+}
+
 export function buildReportHtml(m) {
   const single = m.mode === 'single';
   const title = single ? '无线 Trace · 单小区分析报告' : '无线 Trace · A/B 分析报告';
@@ -49,7 +64,8 @@ export function buildReportHtml(m) {
   <div class="notice${m.status !== 'done' ? ' warn' : ''}"><b>${m.status === 'done' ? '分析已完成' : '分析未完整完成，以下结果需结合缺失数据判断'}</b><div>${escapeHtml(m.batches.map((b) => b.side + '：' + b.label).join('；'))}</div><div>Rate：${escapeHtml(rate)}</div><div>${escapeHtml(m.rateScope)}</div></div>
   <h2>分析范围与口径</h2><p>用户：${escapeHtml(m.users.length ? m.users.join('、') : '小区全部用户')}。列筛选：${escapeHtml(m.filters.join('；') || '无')}。搜索：${escapeHtml(m.search || '无')}。</p><p class="muted">T396 速率是业务量总和除以有效时间总和，覆盖所选用户的全批次记录。T537/T714 指标按当前用户、列筛选与搜索计算。BLER 剔除 DTX；714 指标只代表匹配上且有效的记录。MCS/OLLA 等变化为定位线索，不能单独证明根因。</p>
   <h2>关键指标与分布</h2><p class="muted">CDF 为累计分布；A / 本小区为蓝色，B 为橙色。占比条统一以 100% 为满格。</p><div class="grid">${m.cards.map(cardHtml).join('')}</div>
-  ${single ? `<h2>单小区体检</h2><p>已检查：${escapeHtml(m.coverage?.available.join('、') || '无')}。未检查：${escapeHtml(m.coverage?.missing.join('、') || '无')}。样本不足的规则不代表通过。</p>${m.findings.length ? table(['线索', '用户', '规则'], m.findings.map((x) => [x.title, x.users.join('、'), x.rule])) : '<p>当前规则未检出明显异常；这不等于小区健康或所有指标通过。</p>'}<h2>逐用户指标</h2>${table(['用户', 'Rate（T396 全批次）', 'TTI 占比 %', '调度行数', '有效 ACK', 'MCS', 'BLER %', '截包 %', 'OLLA dB'], m.userMetrics.map((u) => [u.user, number(u.rate), number(u.share, 1), number(u.rows, 0), number(u.valid, 0), number(u.mcs), number(u.bler), number(u.trunc), number(u.olla)]))}` : `<h2>全批次速率变化贡献</h2><p>速率变化与占比变化采用两侧中点对称分摊；总贡献相加等于小区相对变化。新增或消失用户归入占比变化。贡献表覆盖全部用户，不受当前列筛选或搜索影响，属于数学分解，不代表因果。仅一侧有数据或 A 小区速率为零时显示“—”。</p>${table(['用户', 'Rate A', 'Rate B', '占比 A', '占比 B', '速率变化贡献', '占比变化贡献', '总贡献'], contributions)}`}
+  ${single ? `<h2>单小区体检</h2><p>已检查：${escapeHtml(m.coverage?.available.join('、') || '无')}。未检查：${escapeHtml(m.coverage?.missing.join('、') || '无')}。样本不足的规则不代表通过。</p>${m.findings.length ? table(['线索', '用户', '规则'], m.findings.map((x) => [x.title, x.users.join('、'), x.rule])) : '<p>当前规则未检出明显异常；这不等于小区健康或所有指标通过。</p>'}<h2>逐用户指标</h2>${table(['用户', 'Rate（T396 全批次）', 'TTI 占比 %', '调度行数', '有效 ACK', 'MCS', 'BLER %', '截包 %', 'OLLA（MCS 阶）'], m.userMetrics.map((u) => [u.user, number(u.rate), number(u.share, 1), number(u.rows, 0), number(u.valid, 0), number(u.mcs), number(u.bler), number(u.trunc), number(u.olla)]))}` : `<h2>全批次速率变化贡献</h2><p>速率变化与占比变化采用两侧中点对称分摊；总贡献相加等于小区相对变化。新增或消失用户归入占比变化。贡献表覆盖全部用户，不受当前列筛选或搜索影响，属于数学分解，不代表因果。仅一侧有数据或 A 小区速率为零时显示“—”。</p>${table(['用户', 'Rate A', 'Rate B', '占比 A', '占比 B', '速率变化贡献', '占比变化贡献', '总贡献'], contributions)}`}
+  ${diagnosisHtml(m.diagnosis, single)}
   <h2>导出时已显示的图表</h2>${chartImages || '<p class="muted">导出时未显示已生成的图表；上方已包含关键指标分布图。若需时序图，在图表页完成绘图后再次导出。</p>'}${m.chartNotes.length ? `<div class="notice warn">${m.chartNotes.map(escapeHtml).join('<br>')}</div>` : ''}
   <h2>数据来源与质量</h2>${table(['侧', '跟踪', '实际读取路径', '读取行数', '跳过坏行', '未使用后续分片'], sources)}<details><summary>逐文件质量详情</summary>${table(['文件', '质量记录'], m.sources.map((s) => [s.path, JSON.stringify(s.quality || {})]))}</details><h2>读取文件与候选分片</h2>${table(['侧', '跟踪', '本次选中', '扫描到的所有候选文件'], choices)}
   ${m.errors.length ? `<div class="notice warn"><b>未完成项与错误</b><ul>${m.errors.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>` : ''}<p class="muted">本报告保留来源路径与统计结果，请按实际接收对象决定是否分享。它不包含原始 CSV，也不执行脚本或网络请求。</p></main></body></html>`;
@@ -96,6 +112,19 @@ export async function collectReport() {
     model.coverage = checkCoverage(sides.A, comparison);
   } else if (Object.values(sides).some(Boolean)) {
     model.cards = await summaryCards(sides, filters, view.search, stale);
+  }
+  // 诊断结论：与“诊断结论”页签同一套计算
+  try {
+    if (single && sides.A) {
+      const ev = await sideEvidence(sides.A, comparison?.rows, 'A');
+      model.diagnosis = { list: ev.list, common: commonCauses(ev.list) };
+    } else if (sides.A && sides.B) {
+      const ea = await sideEvidence(sides.A, comparison?.rows, 'A');
+      const eb = await sideEvidence(sides.B, comparison?.rows, 'B');
+      model.diagnosis = { ab: concludeAb(ea.rate, eb.rate, ea.lim, eb.lim) };
+    }
+  } catch (err) {
+    model.chartNotes.push(`诊断结论未能导出：${err.message || err}。其余结果已保留。`);
   }
   if (stale()) throw new Error('导出期间分析范围发生变化，本次未保存报告。请等统计更新完后再点导出。');
   return model;

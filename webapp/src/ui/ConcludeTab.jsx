@@ -10,7 +10,7 @@ import { usePager, diagWhere, diagDeps } from './diagCommon.jsx';
 
 const CAUSE_COLOR = { data: '#ea580c', sched: '#9333ea', optimistic: '#dc2626', fluct: '#dc2626', pdcch: '#6b7280', mu: '#0891b2', channel: '#b45309', rank: '#2563eb', rb: '#0e6b4e' };
 
-async function sideEvidence(side, t396Rows, key) {
+export async function sideEvidence(side, t396Rows, key) {
   const where = diagWhere(side);
   const [rate, lim, link, ev] = [await rateFactors(side, where), await limitShares(side, where), await linkDiag(side, where), await detectEvents(side, where)];
   const ref = linkRef(link.users);
@@ -149,8 +149,14 @@ function AbView({ a, b }) {
     return { ...u, newCauses: nb, gone, ea, eb };
   });
   const pg = usePager(rows, 7);
+  // 可比性：CQI 与 CQI 估计 MCS 反映信道环境，基本不受被测算法影响；两侧差得多时，A/B 差异可能来自环境
+  const ca = a.link.cell, cb = b.link.cell;
+  const dCqi = ca?.cqi != null && cb?.cqi != null ? cb.cqi - ca.cqi : null;
+  const dEst = ca?.chain?.[0]?.value != null && cb?.chain?.[0]?.value != null ? cb.chain[0].value - ca.chain[0].value : null;
+  const far = (dCqi != null && Math.abs(dCqi) >= 1) || (dEst != null && Math.abs(dEst) >= 2);
   return (
     <>
+      <div class={'banner ' + (far ? 'warn' : 'info')} style="margin-bottom:6px"><b>可比性</b><span>{dCqi == null && dEst == null ? '缺 CQI 字段，无法判断两侧信道条件是否一致。' : `信道条件：CQI ${fmt(ca?.cqi, 2)} → ${fmt(cb?.cqi, 2)}，CQI 估计 MCS ${fmt(ca?.chain?.[0]?.value, 1)} → ${fmt(cb?.chain?.[0]?.value, 1)}。${far ? '两侧差得较多，A/B 差异可能来自测试环境（位置、干扰、负载），先对齐再下结论；若被测算法本身改的是 CSI/CQI，此条可忽略。' : '两侧相近，可比。'}`}</span></div>
       <div class="banner info concl-cell"><b>小区</b><span>T396 Rate {fmtPct(cell396)}；{ab.lines.join('；') || '样本不足，无法拆解'}。{cellNew.length > 0 && <> B 侧普遍新出现：<b>{cellNew.map((id) => CAUSES[id].label).join('、')}</b>（{cellNew.map((id) => `${newCnt[id]}/${ab.users.length} 个用户`).join('、')}）。</>}</span></div>
       <div class="section">
         <div class="sh"><b>变化最大的用户（按 |变化| × 样本量排序）</b><span class="muted">“B 新出现”= B 侧触发、A 侧没有的初判；“B 已消失”反之</span></div>

@@ -104,6 +104,10 @@ with sync_playwright() as p:
     notes["s4-timeline 内容高/可视高"] = f"{s['sh']}/{s['ch']}"
     checks["事件 → 时间轴：显示事件来源横幅"] = pg.locator(".diag .banner.info", has_text="来自异常事件").count() == 1
     checks["时间轴一屏"] = s["sh"] <= s["ch"] + 4
+    with pg.expect_download(timeout=120000) as dl:
+        pg.get_by_role("button", name="导出报告").click()
+    rep = open(dl.value.path(), encoding="utf-8").read()
+    checks["单小区导出报告含诊断结论（业务量不足）"] = "<h2>诊断结论</h2>" in rep and "业务量不足" in rep
     # ---------- A/B：场景 A vs 场景 B ----------
     pg.goto(url + ("&" if "?" in url else "?") + "picker=input&debug")
     pg.wait_for_timeout(1500)
@@ -148,6 +152,10 @@ with sync_playwright() as p:
     checks["B：5003 有连续 NACK 或 MCS 骤降事件"] = bool(matB.get("5003")) and (matB["5003"][0] not in ("", "0") or matB["5003"][3] not in ("", "0"))
     checks["B：出现连续调度失败事件"] = any(v[2] not in ("", "0") for v in matB.values())
     s = visit(pg, "时间轴", "ab4-timeline", ".diag .plotbox .main-svg")
+    with pg.expect_download(timeout=120000) as dl:
+        pg.get_by_role("button", name="导出报告").click()
+    rep = open(dl.value.path(), encoding="utf-8").read()
+    checks["A/B 导出报告含诊断结论（调度成功率）"] = "<h2>诊断结论</h2>" in rep and "调度成功率" in rep
     checks["页面无脚本错误"] = not errs
     notes["errors"] = errs[:10]
     b.close()
