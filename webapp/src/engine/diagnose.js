@@ -13,11 +13,25 @@ const n = (c) => `TRY_CAST(${qi(c)} AS DOUBLE)`;
 // 38.214 表 5.1.3.1-1（64QAM）每 RE 频谱效率，没有 TB 大小字段时用 MCS 查表近似
 export const SE_64QAM = [0.2344, 0.3066, 0.377, 0.4902, 0.6016, 0.7402, 0.877, 1.0273, 1.1758, 1.3262, 1.3281, 1.4766, 1.6953,
   1.9141, 2.1602, 2.4063, 2.5703, 2.5664, 2.7305, 3.0293, 3.3223, 3.6094, 3.9023, 4.2129, 4.5234, 4.8164, 5.1152, 5.332, 5.5547];
+// 256QAM 表（38.214 表 5.1.3.1-2），MCS 0..27
+export const SE_256QAM = [0.2344, 0.377, 0.6016, 0.877, 1.1758, 1.4766, 1.6953, 1.9141, 2.1602, 2.4063, 2.5703, 2.7305, 3.0293,
+  3.3223, 3.6094, 3.9023, 4.2129, 4.5234, 4.8164, 5.1152, 5.332, 5.5547, 5.8906, 6.2266, 6.5703, 6.9141, 7.1602, 7.4063];
 export const RE_PER_RB = 132;
+
+/**
+ * 层数编码：真实 537 的 schRank 取 0–3（4 天线 UE、成功调度且 TB>0 的行里 52% 为 0），按“0 = 1 层”解释；
+ * 文件里成功调度行的 schRank 最小值为 0 时判为从 0 起编（层数 = schRank + 1），否则层数 = schRank。
+ */
+export async function rankBase(side) {
+  if (!side.columns.includes('schRank')) return 0;
+  const cond = side.columns.includes('allocRbNum') ? `AND TRY_CAST("allocRbNum" AS DOUBLE) > 0` : '';
+  const [r] = await query(`SELECT min(TRY_CAST("schRank" AS DOUBLE)) AS m FROM ${qi(side.table)} WHERE "schRank" IS NOT NULL ${cond}`);
+  return r?.m === 0 ? 1 : 0;
+}
 
 /** 速率拆解的因子定义（顺序即瀑布顺序）。 */
 export const FACTORS = [
-  { id: 'tries', label: '调度机会', unit: '次/千TTI', hint: '每 1000 个 TTI 里该用户被调度（含失败）的初传次数，反映用户数、优先级与业务是否连续' },
+  { id: 'tries', label: '调度机会', unit: '次/千TTI', hint: '每 1000 个有调度记录的 TTI 里，该用户被调度（含失败）的初传次数；反映用户数、优先级与业务是否连续' },
   { id: 'okRate', label: '调度成功率', unit: '%', pct: true, hint: '调度未因 CCE/资源失败（schErrCode = 0）的比例' },
   { id: 'rb', label: 'RB/次', unit: 'RB', hint: '每次成功初传分到的 RB 数；低于需求说明资源受限' },
   { id: 'layers', label: '层数', unit: '层', hint: '按 RB 加权的调度层数（schRank）' },
@@ -27,8 +41,9 @@ export const FACTORS = [
 ];
 
 /** 识别可用字段，生成各子表达式。 */
-export function diagExprs(columns) {
+export function diagExprs(columns, opts = {}) {
   const has = (c) => columns.includes(c);
+  const rb0 = opts.rankBase || 0;
   const err = has('schErrCode')
     ? `(${qi('schErrCode')} IS NULL OR lower(trim(CAST(${qi('schErrCode')} AS VARCHAR))) IN ('0','0x0','0x00','0x0000','0.0',''))`
     : (has('allocRbNum') ? `(${n('allocRbNum')} > 0)` : 'TRUE');
@@ -36,19 +51,26 @@ export function diagExprs(columns) {
     : has('714_retansNum0') ? `(coalesce(${n('714_retansNum0')}, 0) = 0)`
       : has('schType') ? `(upper(CAST(${qi('schType')} AS VARCHAR)) NOT LIKE '%RETRAN%' AND upper(CAST(${qi('schType')} AS VARCHAR)) NOT LIKE '%RETX%')` : 'TRUE';
   const rb = has('allocRbNum') ? `coalesce(${n('allocRbNum')}, 0)` : null;
-  const layers = has('schRank') ? `greatest(coalesce(${n('schRank')}, 1), 1)` : '1';
+  const layers = has('schRank') ? `greatest(coalesce(${n('schRank')}, 0) + ${rb0}, 1)` : '1';
   const mcs = has('tb0SchMcs') ? n('tb0SchMcs') : has('cw0SuMcs') ? n('cw0SuMcs') : null;
   let bits = null, bitsSource = null;
   if (has('tb0TbByteLength')) {
     bits = `(coalesce(${n('tb0TbByteLength')}, 0) + ${has('tb1TbByteLength') ? `coalesce(${n('tb1TbByteLength')}, 0)` : '0'}) * 8`;
     bitsSource = has('tb1TbByteLength') ? 'tb0TbByteLength + tb1TbByteLength' : 'tb0TbByteLength';
   } else if (rb && mcs) {
-    bits = `${rb} * ${RE_PER_RB} * ${layers} * coalesce(list_extract([${SE_64QAM.join(',')}], CAST(least(greatest(${mcs}, 0), 28) AS INTEGER) + 1), 0)`;
-    bitsSource = `MCS 查表估算（${has('tb0SchMcs') ? 'tb0SchMcs' : 'cw0SuMcs'} × 64QAM 表 × ${RE_PER_RB} RE/RB）`;
+    const se = has('mcsTable')
+      ? `CASE WHEN ${n('mcsTable')} = 1 THEN list_extract([${SE_256QAM.join(',')}], CAST(least(greatest(${mcs}, 0), 27) AS INTEGER) + 1) ELSE list_extract([${SE_64QAM.join(',')}], CAST(least(greatest(${mcs}, 0), 28) AS INTEGER) + 1) END`
+      : `list_extract([${SE_64QAM.join(',')}], CAST(least(greatest(${mcs}, 0), 28) AS INTEGER) + 1)`;
+    const re = has('actualRePerRb') ? `coalesce(${n('actualRePerRb')}, ${RE_PER_RB})` : RE_PER_RB;
+    bits = `${rb} * ${re} * ${layers} * coalesce(${se}, 0)`;
+    bitsSource = `MCS 查表估算（${has('tb0SchMcs') ? 'tb0SchMcs' : 'cw0SuMcs'} × ${has('mcsTable') ? '按 mcsTable 选 64/256QAM 表' : '64QAM 表'} × ${has('actualRePerRb') ? 'actualRePerRb' : RE_PER_RB + ' RE/RB'}）`;
   }
-  const ack = has('714_ack0') ? n('714_ack0') : null;
+  // ACK：537 自带的 tb0AckState 优先（真实数据取值分布与 714 ack0 一致，且不受 537/714 连接丢行影响），没有再用 714 ack0
+  const ack = has('tb0AckState') && has('714_ack0') ? `coalesce(${n('tb0AckState')}, ${n('714_ack0')})`
+    : has('tb0AckState') ? n('tb0AckState') : has('714_ack0') ? n('714_ack0') : null;
+  const ackSource = has('tb0AckState') ? '537 tb0AckState' + (has('714_ack0') ? '（缺失时用 714 ack0）' : '') : has('714_ack0') ? '714 ack0' : null;
   const user = has('ambr') ? `CAST(${qi('ambr')} AS VARCHAR)` : `'小区'`;
-  return { has, err, init, rb, layers, bits, bitsSource, ack, user, tti: has('tti') ? n('tti') : null };
+  return { has, err, init, rb, layers, bits, bitsSource, ack, ackSource, rankBase: rb0, user, tti: has('tti') ? n('tti') : null };
 }
 
 /**
@@ -56,16 +78,17 @@ export function diagExprs(columns) {
  * where 应包含列筛选（不要放用户范围，用户表总是列全部用户）。
  */
 export async function rateFactors(side, where) {
-  const e = diagExprs(side.columns);
+  const e = diagExprs(side.columns, { rankBase: await rankBase(side) });
   const missing = [];
   if (!e.rb) missing.push('allocRbNum');
   if (!e.bits) missing.push('TB 大小或 MCS');
-  if (!e.ack) missing.push('714 ack0');
+  if (!e.ack) missing.push('ACK（537 tb0AckState / 714 ack0）');
   if (!e.rb || !e.bits) return { cell: null, users: [], missing, bitsSource: e.bitsSource };
   const ackOk = e.ack ? `CASE WHEN __ack = 1 THEN __bits ELSE 0 END` : '__bits';
   const valid = e.ack ? `CASE WHEN __ack IS NOT NULL THEN __bits ELSE 0 END` : '__bits';
   const nonDtx = e.ack ? `CASE WHEN __ack IN (0, 1) THEN __bits ELSE 0 END` : '__bits';
-  const [span] = await query(`SELECT ${e.tti ? `max(${e.tti}) - min(${e.tti}) + 1` : 'count(*)'} AS __span FROM ${qi(side.table)} WHERE ${where}`);
+  // 分母 = 有调度记录的 TTI 个数（真实 tti 计数会分段、跳变，max − min 不可靠）
+  const [span] = await query(`SELECT ${e.tti ? `count(DISTINCT ${e.tti})` : 'count(*)'} AS __span FROM ${qi(side.table)} WHERE ${where}`);
   const rows = await query(`WITH b AS (
       SELECT ${e.user} AS __u, ${e.err} AS __ok, ${e.init} AS __init, ${e.rb} AS __rb, ${e.layers} AS __l,
         ${e.bits} AS __bits, ${e.ack || 'NULL'} AS __ack
@@ -101,8 +124,8 @@ export async function rateFactors(side, where) {
   const all = rows.map(build);
   const cell = all.find((x) => x.user === '__cell__') || null;
   const users = all.filter((x) => x.user !== '__cell__').sort((a, b) => b.tries - a.tries);
-  if (!e.ack) missing.push('714 ack0（PDCCH 送达与译码成功按 100% 计）');
-  return { cell, users, span: S, bitsSource: e.bitsSource, missing };
+  if (!e.ack) missing.push('ACK 字段（PDCCH 送达与译码成功按 100% 计）');
+  return { cell, users, span: S, bitsSource: e.bitsSource, ackSource: e.ackSource, rankBase: e.rankBase, missing };
 }
 
 /** 对数分摊：A→B 的总变化按因子拆开，返回 [{id, ratio, contrib(百分点)}]，各项之和 = 总变化。 */
@@ -148,7 +171,7 @@ export const MCS_CHAIN = [
 ];
 
 export async function linkDiag(side, where) {
-  const e = diagExprs(side.columns);
+  const e = diagExprs(side.columns, { rankBase: await rankBase(side) });
   const has = e.has;
   const chain = MCS_CHAIN.filter(([c]) => has(c));
   const target = has('714_iblerTarget') ? `avg(${n('714_iblerTarget')}) / ${IBLER_SCALE} * 100` : 'NULL';
@@ -269,11 +292,12 @@ export async function timelineData(side, where, user, range, maxPoints = 4000) {
   if (range) conds.push(`${e.tti} BETWEEN ${Number(range[0])} AND ${Number(range[1])}`);
   const w = conds.join(' AND ');
   const [{ __c: total }] = await query(`SELECT count(*) AS __c FROM ${qi(side.table)} WHERE ${w}`);
+  const base = await rankBase(side);
   const stride = Math.max(1, Math.ceil(Number(total) / maxPoints));
   const rows = await query(`WITH o AS (SELECT ${e.tti} AS __t, ${cols.map((c) => `${n(c)} AS ${qi(c)}`).concat(extra.map((c) => `CAST(${qi(c)} AS VARCHAR) AS ${qi(c)}`)).join(', ')},
       row_number() OVER (ORDER BY ${e.tti}, __source_row) AS __k FROM ${qi(side.table)} WHERE ${w})
     SELECT * FROM o WHERE ((__k - 1) % ${stride}) = 0 ORDER BY __k LIMIT ${maxPoints}`);
-  const col = (c) => rows.map((r) => r[c] ?? null);
+  const col = (c) => rows.map((r) => (r[c] == null ? null : c === 'schRank' ? r[c] + base : r[c]));
   return { tti: col('__t'), series: Object.fromEntries([...cols, ...extra].map((c) => [c, col(c)])), total: Number(total), stride, columns: cols };
 }
 

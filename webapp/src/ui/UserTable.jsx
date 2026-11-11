@@ -14,7 +14,7 @@ const COLS = [
   { k: 'rows', label: '调度行数', int: true },
   { k: 'mcs', label: 'MCS 均值', d: 2, worse: (x, c) => c.mcs != null && x <= c.mcs - 5 },
   { k: 'tb0', label: 'tb0 MCS', d: 2 },
-  { k: 'rank2', label: 'Rank2 %', d: 1 },
+  { k: 'rank2', label: '多流 %', d: 1 },
   { k: 'bler', label: 'BLER %', d: 2, worse: (x, c) => c.bler != null && x >= Math.max(10, c.bler * 2) },
   { k: 'dtx', label: 'DTX 行', int: true },
   { k: 'trunc', label: '截包 %', d: 2, worse: (x, c) => c.trunc != null && x >= Math.max(5, c.trunc * 2) },

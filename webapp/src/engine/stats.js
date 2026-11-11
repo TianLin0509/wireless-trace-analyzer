@@ -4,6 +4,7 @@ import { query } from './db.js';
 import { qi } from './sql.js';
 import { filterSql, userScope } from './query.js';
 import { MAX_CHART_POINTS, TRUNCATED_LIMIT } from './config.js';
+import { rankBase } from './diagnose.js';
 
 const QUANTS = Array.from({ length: 101 }, (_, i) => i / 100);
 const SPARK_QUANTS = Array.from({ length: 41 }, (_, i) => i / 40);
@@ -65,10 +66,11 @@ export async function userBreakdown(side, where) {
   if (!has('ambr')) return [];
   const sel = ['CAST("ambr" AS VARCHAR) AS __u', 'count(*) AS __n'];
   if (has('cw0SuMcs')) sel.push(`avg(${v('cw0SuMcs')}) AS __mcs`, `quantile_cont(${v('cw0SuMcs')}, 0.5) AS __mcs_p50`);
-  if (has('schRank')) sel.push(`avg(CASE WHEN ${v('schRank')} = 2 THEN 1.0 WHEN ${v('schRank')} IS NOT NULL THEN 0.0 END) AS __rank2`);
+  if (has('schRank')) sel.push(`avg(CASE WHEN ${v('schRank')} + ${await rankBase(side)} >= 2 THEN 1.0 WHEN ${v('schRank')} IS NOT NULL THEN 0.0 END) AS __rank2`);
   if (has('usrschpdschDrbData')) sel.push(`avg(CASE WHEN ${v('usrschpdschDrbData')} > 0 AND ${v('usrschpdschDrbData')} < ${TRUNCATED_LIMIT} THEN 1.0 WHEN ${v('usrschpdschDrbData')} IS NOT NULL THEN 0.0 END) AS __trunc`);
   if (has('714_ack0')) sel.push(`1.0 - avg(${v('714_ack0')}) FILTER (WHERE ${v('714_ack0')} IN (0,1)) AS __bler`);
-  if (has('714_compOlla_scaled')) sel.push(`avg(${v('714_compOlla_scaled')}) AS __olla`);
+  const oc = has('714_mcsOffset0_scaled') ? '714_mcsOffset0_scaled' : has('714_compOlla_scaled') ? '714_compOlla_scaled' : null;
+  if (oc) sel.push(`avg(${v(oc)}) AS __olla`);
   return query(`SELECT ${sel.join(', ')} FROM ${qi(side.table)} WHERE ${where} AND "ambr" IS NOT NULL GROUP BY __u`);
 }
 
@@ -77,9 +79,9 @@ export async function userBreakdown(side, where) {
 const CARD_DEFS = [
   { id: 'mcs', label: 'cw0SuMcs 均值', column: 'cw0SuMcs', kind: 'mean', better: 'up', unit: '', digits: 2, minDelta: 0.3, chart: 'cw0SuMcs' },
   { id: 'bler', label: 'BLER（714 ack0，剔除 DTX）', column: '714_ack0', kind: 'bler', better: 'down', unit: '%', digits: 2, minDelta: 0.5, chart: '714_ack0' },
-  { id: 'rank2', label: 'schRank = 2 占比', column: 'schRank', kind: 'share', test: (x) => `${x} = 2`, better: 'up', unit: '%', digits: 1, minDelta: 1, chart: 'schRank' },
+  { id: 'rank2', label: '多流占比（≥ 2 层）', column: 'schRank', kind: 'share', test: (x, base = 0) => `${x} + ${base} >= 2`, better: 'up', unit: '%', digits: 1, minDelta: 1, chart: 'schRank' },
   { id: 'trunc', label: `截包占比（0 < data < ${TRUNCATED_LIMIT}）`, column: 'usrschpdschDrbData', kind: 'share', test: (x) => `${x} > 0 AND ${x} < ${TRUNCATED_LIMIT}`, better: 'down', unit: '%', digits: 2, minDelta: 0.5, chart: 'usrschpdschDrbData' },
-  { id: 'olla', label: 'compOlla 均值（÷1024000）', column: '714_compOlla_scaled', kind: 'mean', better: null, unit: 'dB', digits: 2, minDelta: 0.2, chart: '714_compOlla_scaled' },
+  { id: 'olla', label: 'OLLA 外环累计量（mcsOffset÷1024000）', column: '714_mcsOffset0_scaled', kind: 'mean', better: null, unit: 'MCS 阶', digits: 2, minDelta: 0.2, chart: '714_mcsOffset0_scaled' },
   { id: 'tb0', label: 'tb0SchMcs 均值', column: 'tb0SchMcs', kind: 'mean', better: 'up', unit: '', digits: 2, minDelta: 0.3, chart: 'tb0SchMcs' },
 ];
 
@@ -94,7 +96,8 @@ async function cardSide(side, def, where) {
     const [r] = await query(`SELECT count(*) FILTER (WHERE ${x} IN (0,1)) AS __n, 1.0 - avg(${x}) FILTER (WHERE ${x} IN (0,1)) AS __p FROM ${qi(side.table)} WHERE ${where}`);
     return { value: r.__p == null ? null : r.__p * 100, n: r.__n, p: r.__p };
   }
-  const [r] = await query(`SELECT count(${x}) AS __n, avg(CASE WHEN ${def.test(x)} THEN 1.0 WHEN ${x} IS NOT NULL THEN 0.0 END) AS __p FROM ${qi(side.table)} WHERE ${where}`);
+  const base = def.id === 'rank2' ? await rankBase(side) : 0;
+  const [r] = await query(`SELECT count(${x}) AS __n, avg(CASE WHEN ${def.test(x, base)} THEN 1.0 WHEN ${x} IS NOT NULL THEN 0.0 END) AS __p FROM ${qi(side.table)} WHERE ${where}`);
   return { value: r.__p == null ? null : r.__p * 100, n: r.__n, p: r.__p };
 }
 

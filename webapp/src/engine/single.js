@@ -4,6 +4,7 @@ import { query } from './db.js';
 import { qi } from './sql.js';
 import { metricSummary, categoryCounts } from './stats.js';
 import { TRUNCATED_LIMIT } from './config.js';
+import { rankBase } from './diagnose.js';
 
 const v = (c) => `TRY_CAST(${qi(c)} AS DOUBLE)`;
 /** OLLA 指标优先用外环累计量 mcsOffset[0]（公司样例注释：外环累计量/1024000，单位 MCS 阶），没有再用 compOlla。 */
@@ -15,7 +16,7 @@ export const OVERVIEW_CARDS = [
   { id: 'mcs', label: 'MCS 均值（cw0SuMcs）', column: 'cw0SuMcs', kind: 'mean', digits: 2 },
   { id: 'tb0', label: 'tb0SchMcs 均值', column: 'tb0SchMcs', kind: 'mean', digits: 2 },
   { id: 'bler', label: 'BLER（剔除 DTX）', column: '714_ack0', kind: 'bler', unit: '%', digits: 2 },
-  { id: 'rank2', label: 'Rank2 占比（schRank = 2）', column: 'schRank', kind: 'share', test: (x) => `${x} = 2`, unit: '%', digits: 1 },
+  { id: 'rank2', label: '多流占比（≥ 2 层）', column: 'schRank', kind: 'share', test: (x, base = 0) => `${x} + ${base} >= 2`, unit: '%', digits: 1 },
   { id: 'trunc', label: `截包占比（0 < data < ${TRUNCATED_LIMIT}）`, column: 'usrschpdschDrbData', kind: 'share', test: (x) => `${x} > 0 AND ${x} < ${TRUNCATED_LIMIT}`, unit: '%', digits: 2 },
   { id: 'rb', label: 'RB 数均值（allocRbNum）', column: 'allocRbNum', kind: 'mean', digits: 1 },
   { id: 'cqi', label: 'CQI 均值（bandCqiCw0）', column: 'bandCqiCw0', kind: 'mean', digits: 2 },
@@ -27,6 +28,7 @@ export const OVERVIEW_CARDS = [
 
 export async function cellOverview(side, where, isStale) {
   const has = (c) => side.columns.includes(c);
+  const rbase = await rankBase(side);
   const [base] = await query(`SELECT count(*) AS __n,
       ${has('ambr') ? `count(DISTINCT "ambr")` : 'NULL'} AS __users,
       ${has('tti') ? `min(${v('tti')}) AS __tti0, max(${v('tti')})` : 'NULL AS __tti0, NULL'} AS __tti1,
@@ -46,8 +48,8 @@ export async function cellOverview(side, where, isStale) {
           1.0 - avg(${x}) FILTER (WHERE ${x} IN (0,1)) AS __p FROM ${qi(side.table)} WHERE ${where}`);
       cards.push({ ...def, value: r.__p == null ? null : r.__p * 100, n: r.__valid, dtx: r.__dtx });
     } else if (def.kind === 'share') {
-      const [r] = await query(`SELECT count(${x}) AS __n, avg(CASE WHEN ${def.test(x)} THEN 1.0 WHEN ${x} IS NOT NULL THEN 0.0 END) AS __p FROM ${qi(side.table)} WHERE ${where}`);
-      cards.push({ ...def, test: undefined, value: r.__p == null ? null : r.__p * 100, n: r.__n });
+      const [r] = await query(`SELECT count(${x}) AS __n, avg(CASE WHEN ${def.test(x, rbase)} THEN 1.0 WHEN ${x} IS NOT NULL THEN 0.0 END) AS __p FROM ${qi(side.table)} WHERE ${where}`);
+      cards.push({ ...def, test: undefined, value: r.__p == null ? null : r.__p * 100, n: r.__n, ...(def.id === 'rank2' ? { label: `多流占比（≥ 2 层；schRank ${rbase ? '从 0 起编' : '从 1 起编'}）` } : {}) });
     } else {
       const c = await categoryCounts(side, def.column, where, 4);
       cards.push({ ...def, cats: c.values.map((val, i) => ({ value: val, share: c.total ? (c.counts[i] / c.total) * 100 : 0 })), n: c.total });
@@ -75,11 +77,12 @@ export async function cellBasics(side, where) {
 /** 逐用户指标（按 ambr 分组）。where 不含用户范围：表里总是列出全部用户。 */
 export async function userMetrics(side, where) {
   const has = (c) => side.columns.includes(c);
+  const base = await rankBase(side);
   if (!has('ambr')) return [];
   const sel = ['CAST("ambr" AS VARCHAR) AS __u', 'count(*) AS __n'];
   if (has('cw0SuMcs')) sel.push(`avg(${v('cw0SuMcs')}) AS __mcs`);
   if (has('tb0SchMcs')) sel.push(`avg(${v('tb0SchMcs')}) AS __tb0`);
-  if (has('schRank')) sel.push(`avg(CASE WHEN ${v('schRank')} = 2 THEN 1.0 WHEN ${v('schRank')} IS NOT NULL THEN 0.0 END) * 100 AS __rank2`);
+  if (has('schRank')) sel.push(`avg(CASE WHEN ${v('schRank')} + ${base} >= 2 THEN 1.0 WHEN ${v('schRank')} IS NOT NULL THEN 0.0 END) * 100 AS __rank2`);
   if (has('usrschpdschDrbData')) sel.push(`avg(CASE WHEN ${v('usrschpdschDrbData')} > 0 AND ${v('usrschpdschDrbData')} < ${TRUNCATED_LIMIT} THEN 1.0 WHEN ${v('usrschpdschDrbData')} IS NOT NULL THEN 0.0 END) * 100 AS __trunc`);
   if (has('714_ack0')) {
     const a = v('714_ack0');

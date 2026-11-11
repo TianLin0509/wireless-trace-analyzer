@@ -163,10 +163,10 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
                 schErrCode=err, userNum=n_sched, schSuccUserNum=succ, pairNum=2 if is_mu else 0,
                 ttiTotalRbNum=RB_TOTAL, esitimatedRb=need_rb, allocRbNum=rb, suOrMuFlag='MU' if is_mu else 'SU',
                 schType='DLSCH_TYPE_DRB' if kind == 'new' else 'DLSCH_TYPE_RETRAN', cw0SuMcs=int(np.clip(rate_mtc, 0, 28)), tb0SchMcs=final,
-                bandCqiCw0=int(np.clip(round((cqi_sinr[i] + 6) / 2), 0, 15)), schRank=layers, suRank=layers,
+                bandCqiCw0=int(np.clip(round((cqi_sinr[i] + 6) / 2), 0, 15)), schRank=layers - 1, suRank=layers - 1,  # 真实 537 从 0 起编
                 waitingData=int(buf[i]), usrschpdschDrbData=data, tb0TbByteLength=tbs, harqProcNo=harq, tb0ReTransTimes=retx,
                 estMcs0=est_mcs, cw0Mcs=final, initAdjMcs0=init_adj, powerBackMcs0=int(np.clip(power_back, 0, 28)),
-                rateMtcMcs0=int(np.clip(rate_mtc, 0, 28)), reduceMcs0=final, k1min=3, mcsTable=0,
+                rateMtcMcs0=int(np.clip(rate_mtc, 0, 28)), reduceMcs0=final, k1min=3, mcsTable=0, tb0AckState=None,
             ))
             if err != ERR_OK:
                 continue
@@ -175,6 +175,7 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
             p_err = 1 / (1 + math.exp(1.6 * (sinr[i] + gain - REQ[final] + 0.5)))
             dtx = rng.random() < p.get('dtx', 0.002) * (6 if p.get('dtx') and 0.2 < frac < 0.3 else 1)
             ack = 2 if dtx else (0 if rng.random() < p_err else 1)
+            rows537[-1]['tb0AckState'] = ack
             # 714 在反馈时刻（k1 个时隙后）记录；这里按“调度时刻”的 frm/slot 写，便于与现有精确连接口径一致
             olla_before = olla[i]
             if retx == 0 and ack in (0, 1):

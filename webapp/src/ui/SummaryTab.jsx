@@ -142,7 +142,7 @@ function ImpactTable() {
     const parts = [];
     if (a.__bler != null && b.__bler != null && Math.abs(b.__bler - a.__bler) * 100 >= 1) parts.push(`BLER ${fmt(a.__bler * 100, 1)}%→${fmt(b.__bler * 100, 1)}%`);
     if (a.__mcs != null && b.__mcs != null && Math.abs(b.__mcs - a.__mcs) >= 0.5) parts.push(`MCS 均值 ${fmtDelta(b.__mcs - a.__mcs, 1)}`);
-    if (a.__rank2 != null && b.__rank2 != null && Math.abs(b.__rank2 - a.__rank2) * 100 >= 3) parts.push(`Rank2 ${fmt(a.__rank2 * 100, 0)}%→${fmt(b.__rank2 * 100, 0)}%`);
+    if (a.__rank2 != null && b.__rank2 != null && Math.abs(b.__rank2 - a.__rank2) * 100 >= 3) parts.push(`多流 ${fmt(a.__rank2 * 100, 0)}%→${fmt(b.__rank2 * 100, 0)}%`);
     if (a.__trunc != null && b.__trunc != null && Math.abs(b.__trunc - a.__trunc) * 100 >= 1) parts.push(`截包 ${fmt(a.__trunc * 100, 1)}%→${fmt(b.__trunc * 100, 1)}%`);
     return parts.join('，') || '无明显伴随变化';
   };
