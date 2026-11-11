@@ -84,6 +84,13 @@ def main():
     rng = np.random.default_rng(3)
     for f in src.rglob('Dest_T*.csv'):
         trace = f.name.split('_')[1][1:]
+        if trace in ('650', '941'):  # 生成器已按真实形态写出，原样搬到 ParseResult/<时间>/ 下
+            stamp = f.stem.rsplit('_', 1)[1]
+            sub = f'{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}-{stamp[8:10]}_{stamp[10:12]}_{stamp[12:14]}'
+            target = dst / f.relative_to(src).parent / sub / f.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(f.read_bytes())
+            continue
         df = pd.read_csv(f, sep='\t')
         if drop and trace in ('537', '714'):
             df = df[rng.random(len(df)) >= drop].reset_index(drop=True)

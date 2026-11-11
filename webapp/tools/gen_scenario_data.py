@@ -56,7 +56,7 @@ def user_profiles(scheme: str):
         5003: dict(sinr=15, sd=2.5, traffic='full', cqi_bias=0.0, mu=0.20),
         5004: dict(sinr=25, sd=1.5, traffic='full', cqi_bias=0.0, mu=0.35),
         5005: dict(sinr=10, sd=3.0, traffic='full', cqi_bias=3.0, mu=0.05),   # CQI 虚高
-        5006: dict(sinr=14, sd=2.5, traffic='bursty', cqi_bias=0.0, mu=0.10, dtx=0.06),  # PDCCH 漏检
+        5006: dict(sinr=14, sd=2.5, traffic='bursty', cqi_bias=0.0, mu=0.10, dtx=0.06, pdcch_poor=True),  # PDCCH 漏检（PDCCH 覆盖差：聚合级别被抬高）
         5007: dict(sinr=12, sd=4.5, traffic='full', cqi_bias=0.0, mu=0.10),   # 快速移动、信道波动大
         5008: dict(sinr=16, sd=2.0, traffic='small', cqi_bias=0.0, mu=0.0),   # 小包业务
     }
@@ -79,6 +79,10 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
     pending = {}                       # (user, harq) -> dict(retx, mcs, rb, layers, tbs, due)
     next_harq = np.zeros(n_u, dtype=int)
     rows537, rows714 = [], []
+    # 650/941 用独立随机源，537/714/396 的数据与旧版逐字节一致
+    rng2 = np.random.default_rng(seed + 1000)
+    rows650, rows941 = [], []
+    dtx_run = np.zeros(n_u, dtype=int)
     delivered = np.zeros(n_u)          # 统计周期内交付比特
     active = np.zeros(n_u)             # 统计周期内有数据的时隙数（掐头去尾近似为有数据的时隙）
     rows396 = []
@@ -154,6 +158,9 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
                 retx = 0
                 harq = int(next_harq[i]); next_harq[i] = (next_harq[i] + 1) % 16
             err = ERR_CCE if j in fails else ERR_OK
+            # T650：每次下行调度一条 CCE 申请；CCE 失败的调度 result ≠ 0（码值为示例，不代表真实码表）
+            agg = agg_level(sinr[i], p, rng2, dtx_run[i])
+            rows650.append(row650(tti, 17000 + (u - 5000) * 13, u - 4900, 'DL_DATA(32)', 0x30001 if err != ERR_OK else 0, agg, frm, slot, hhmmss, dl_fail=int(err != ERR_OK)))
             if err != ERR_OK:
                 rb, tbs, data = 0, 0, 0
             else:
@@ -175,6 +182,9 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
             p_err = 1 / (1 + math.exp(1.6 * (sinr[i] + gain - REQ[final] + 0.5)))
             dtx = rng.random() < p.get('dtx', 0.002) * (6 if p.get('dtx') and 0.2 < frac < 0.3 else 1)
             ack = 2 if dtx else (0 if rng.random() < p_err else 1)
+            dtx_run[i] = dtx_run[i] + 1 if ack == 2 else 0
+            if rng2.random() < 0.6:  # T941：聚合级别调整快照（部分时隙才有）
+                rows941.append(row941(tti, 17000 + (u - 5000) * 13, agg, int(min(dtx_run[i], 7)), cqi_sinr[i], sinr[i], frm, slot, hhmmss))
             # 714 在反馈时刻（k1 个时隙后）记录；这里按“调度时刻”的 frm/slot 写，便于与现有精确连接口径一致
             olla_before = olla[i]
             # 真实语义（实测）：537 tb0AckState / 714 ack0 记的是“触发本次调度的上一次反馈”，
@@ -213,6 +223,15 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
                     pending.pop((i, harq), None)
             inst = tbs * 8 * SLOTS_PER_SEC
             avg_thr[i] = 0.98 * avg_thr[i] + 0.02 * inst
+        # T650 上行授权申请（每时隙 2 个用户）、释放记录与系统消息（SIB）：上行失败率约为下行的一半
+        for i in rng2.choice(n_u, size=2, replace=False):
+            u = users[i]
+            f = rng2.random() < cce_fail * 0.5
+            rows650.append(row650(tti, 17000 + (u - 5000) * 13, u - 4900, 'UL_DATA(64)', 0x30002 if f else 0, agg_level(sinr[i], prof[u], rng2, 0), frm, slot, hhmmss, ul_fail=int(f) * int(rng2.integers(1, 6))))
+        if t % 160 == 0:
+            rows650.append(row650(tti, 65535, 65535, 'SIB(1)', 0, 8, frm, slot, hhmmss))
+        if t % 7 == 0:
+            rows650.append(row650(tti, 17000 + (users[t % n_u] - 5000) * 13, users[t % n_u] - 4900, 'DL_DATA(32)', 0, 1, frm, slot, hhmmss, pos='PDCCH_CCE_RELEASE'))
         for i in range(n_u):
             avg_thr[i] *= 0.999 if i not in [s[1] for s in sched if s[0] == 'new'] else 1
             if buf[i] > 0:
@@ -223,7 +242,46 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
                     # 掐头去尾近似：去掉最后一个时隙；真实单位 vol = 字节、time = 微秒（0.5 ms / 时隙 = 500 μs），Rate×8 = Mbps
                     rows396.append(dict(tti=tti, dlAmbr=u, susrId=u - 4900, dlThpVolRmvLastSlot=int(delivered[i] / 8), dlThpTimeRmvLastSlot=int((active[i] - 1) * 500)))
             delivered[:] = 0; active[:] = 0
-    return pd.DataFrame(rows396), pd.DataFrame(rows537), pd.DataFrame(rows714)
+    return pd.DataFrame(rows396), pd.DataFrame(rows537), pd.DataFrame(rows714), rows650, rows941
+
+
+AGG_IDX = {1: 0, 2: 1, 4: 2, 8: 3, 16: 4}
+TTI_OFFSET = 2 ** 33  # 真实数据：650/941 的 rptTti 比 537 的 tti 小一个固定的 2^33
+
+
+def agg_level(sinr, p, rng, dtx_run):
+    """PDCCH 聚合级别：SINR 越低越高；PDCCH 覆盖差的用户整体偏高；连续 DTX 后抬到 16。"""
+    if dtx_run > 0:
+        return 16
+    if p.get('pdcch_poor'):
+        return int(rng.choice([4, 8, 16], p=[0.2, 0.35, 0.45]))
+    for th, a in ((12, 1), (8, 2), (4, 4), (0, 8)):
+        if sinr > th:
+            return a
+    return 16
+
+
+def row650(tti, rnti, usr, st, result, agg, frm, slot, hhmmss, dl_fail=0, ul_fail=0, pos='PDCCH_CCE_ALLOC_FINISHED'):
+    return [hhmmss, 0, tti - TTI_OFFSET, frm, slot, usr, rnti, st, result, frm, slot, 'D1_1(3)' if st.startswith('DL') else 'U0_1(1)', pos,
+            f'AGG_LVL_{agg}({AGG_IDX[agg]})', ul_fail, dl_fail, 600 * agg, 3, 5, '']
+
+
+def row941(tti, rnti, agg, dtx, cqi_sinr, sinr, frm, slot, hhmmss):
+    return [hhmmss, 0, tti - TTI_OFFSET, frm, slot, rnti, dtx, 0, agg, agg, int(np.clip(round((cqi_sinr + 6) / 2), 0, 15)), 1, int(round(sinr * 100)), int(round(sinr * 100 + 700)), '']
+
+
+# 真实表头形态：650 有重名列（searchTime 等多组搜索尝试），两表末尾都多一个空字段
+H650 = ['HH:MM:SS', 'Ticks', 'rptTti', 'rptFrmNo', 'rptSlotNo', 'usrId', 'rnti', 'schTypeBitmap', 'result', 'frmNo', 'slotNo', 'dciFormat', 'tracePos',
+        'initAggLvl', 'ulCceFailCnt', 'dlCceFailCnt', 'finalPdcchPower', 'searchTime', 'searchTime', '']
+H941 = ['HH:MM:SS', 'Ticks', 'rptTti', 'frmNo', 'slotNo', 'rnti', 'continuousDlDtxNum', 'continuousUlDtxNum', 'suAggLvl', 'muAggLvl', 'widebandCqi0', 'rank', 'suSinr', 'sinrPdschOlla', '']
+
+
+def write_raw(path, header, rows):
+    import csv
+    with open(path, 'w', encoding='utf-8-sig', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(header)
+        w.writerows(rows)
 
 
 TRUTH = {
@@ -231,7 +289,7 @@ TRUTH = {
         'cell': '单小区场景（基线）',
         'faults': [
             {'user': '5005', 'type': 'cqi_overreport', 'label': 'CQI 虚高：CQI 比实际信道高约 3 dB → OLLA 持续为负，初传 BLER 高于目标'},
-            {'user': '5006', 'type': 'pdcch_dtx', 'label': 'PDCCH 漏检：DTX 比例高，20%~30% 时段成串 DTX'},
+            {'user': '5006', 'type': 'pdcch_dtx', 'label': 'PDCCH 漏检：DTX 比例高，20%~30% 时段成串 DTX；PDCCH 覆盖差，聚合级别 16 约占 45%（650/941）'},
             {'user': '5007', 'type': 'fast_fading', 'label': '信道波动大（快速移动）：MCS 抖动、BLER 偏高'},
             {'user': '5008', 'type': 'small_packet', 'label': '小包业务：数据受限，截包比例高，速率低但不是空口问题'},
         ],
@@ -250,11 +308,13 @@ TRUTH = {
 def write(root: Path, scheme: str, case: str, stamp: str, slots: int, seed: int, cce_fail: float):
     out = root / f'场景{scheme}' / case / 'Cell_1' / 'ParseResult'
     out.mkdir(parents=True, exist_ok=True)
-    f396, f537, f714 = run(scheme, slots, seed, cce_fail)
+    f396, f537, f714, r650, r941 = run(scheme, slots, seed, cce_fail)
     base = f'{case}_Cell_1'
     f396.to_csv(out / f'Dest_T396_{base}_trace_0_{stamp}.csv', index=False, sep='\t')
     f537.to_csv(out / f'Dest_T537_{base}_trace_0_{stamp}.csv', index=False, sep='\t')
     f714.to_csv(out / f'Dest_T714_{base}_trace_0_{stamp}.csv', index=False, sep='\t')
+    write_raw(out / f'Dest_T650_TTI_TRACE_CTRLCH_PDCCH_CCE_PROC_0_{stamp}.csv', H650, r650)
+    write_raw(out / f'Dest_T941_TTI_TRACE_SUSRPDCCH_AGG_LVL_ADJ_TRACE_0_{stamp}.csv', H941, r941)
     return len(f537), len(f714), len(f396)
 
 

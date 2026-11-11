@@ -1,10 +1,11 @@
 // 一键流水线：T396 先出结果 → 读取 537/714（只读需要的列）→ 自动合并。全程后台进行，界面随时可看已就绪的部分。
 // 任务串行：新任务先让旧任务停下并等它真正结束，再清理旧表，避免两个任务交叉改写同名表和界面状态。
 import { batch as signalBatch } from '@preact/signals';
-import { ingestT396, ingestTable, dropTable } from './engine/ingest.js';
+import { ingestT396, ingestTable, ingestAux, dropTable } from './engine/ingest.js';
 import { sniffFile, SNIFF_BYTES } from './engine/csvsniff.js';
 import { mergeSide } from './engine/merge.js';
 import { stats714 } from './engine/diagnose.js';
+import { statsCtrl, CTRL_650_COLUMNS, CTRL_941_COLUMNS } from './engine/ctrl.js';
 import { DIAG_537_COLUMNS, DIAG_714_COLUMNS } from './engine/config.js';
 import { compareT396 } from './engine/t396.js';
 import { getFile, getHead, isHelperFile } from './engine/fs.js';
@@ -15,7 +16,8 @@ import * as S from './store.js';
 
 const KEYS_537 = ['tti', 'ambr', 'crnti', 'HH:MM:SS', 'frm', 'slotNo', 'slotNum'];
 const KEYS_714 = ['crnti', 'HH:MM:SS', 'frm', 'slotNum', 'slotNo'];
-const SRC_TABLES = ['src_A537', 'src_A714', 'src_B537', 'src_B714'];
+const SRC_TABLES = ['src_A537', 'src_A714', 'src_B537', 'src_B714', 'src_A650', 'src_A941', 'src_B650', 'src_B941'];
+const AUX = { 650: { label: 'T650 CCE', columns: CTRL_650_COLUMNS }, 941: { label: 'T941 聚合级别', columns: CTRL_941_COLUMNS } };
 let runSeq = 0;
 let activeRun = Promise.resolve();
 // 浏览器单线程引擎的经验吞吐（MB/s），每读完一个文件按实测更新，用于估算进度
@@ -28,7 +30,7 @@ export function sourceFiles(sel) {
   for (const side of ['A', 'B']) {
     const b = sel[side];
     if (!b) continue;
-    for (const id of ['396', '537', '714']) {
+    for (const id of ['396', '537', '714', '650', '941']) {
       const f = b.traces[id]?.selected;
       if (f) out[`${side}${id}`] = f;
     }
@@ -79,10 +81,12 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
   add('A537', `${S.sideLabel('A')} · T537 调度`, 3, files.A537);
   add('A714', `${S.sideLabel('A')} · T714 链路`, 1.5, files.A537 && files.A714);
   add('mergeA', `${S.sideLabel('A')} · 合并 537 ⟵ 714`, 0.4, files.A537 ? {} : null);
+  for (const id of ['650', '941']) if (files.A537 && files[`A${id}`]) add(`A${id}`, `${S.sideLabel('A')} · ${AUX[id].label}`, 0.6, files[`A${id}`]);
   if (sel.B) {
     add('B537', `${S.sideLabel('B')} · T537 调度`, 3, files.B537);
     add('B714', `${S.sideLabel('B')} · T714 链路`, 1.5, files.B537 && files.B714);
     add('mergeB', `${S.sideLabel('B')} · 合并 537 ⟵ 714`, 0.4, files.B537 ? {} : null);
+    for (const id of ['650', '941']) if (files.B537 && files[`B${id}`]) add(`B${id}`, `${S.sideLabel('B')} · ${AUX[id].label}`, 0.6, files[`B${id}`]);
   }
   const startedAt = Date.now();
   const alive = () => myRun === runSeq;
@@ -214,6 +218,22 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
           merged[side] = await timed(`merge${side}`, 0, () => mergeSide(side, t['537'], t['714'] || null, t['714'] ? null : fallback714(side === 'A' ? 'B' : 'A')));
           // 原表释放前，在 714 原表上做独立统计（初传 BLER / DTX / OLLA），不受 537/714 逐行连接率影响
           if (merged[side] && t['714']) merged[side].stats714 = await stats714(t['537'], t['714']).catch(() => null);
+          // 控制信道（650/941）：读入后按用户汇总，立即释放
+          const aux = {};
+          for (const id of ['650', '941']) {
+            const key = `${side}${id}`, f = files[key];
+            if (!f || !merged[side]) continue;
+            try {
+              const file = await fetchFile(key, f);
+              aux[id] = await timed(key, file.size / 3, () => ingestAux(key, file, AUX[id].columns));
+              record(key, { key, trace: id, side, name: f.name, relPath: f.relPath, size: file.size, rows: aux[id].rows, columns: aux[id].columns, selected: aux[id].selected, numericColumns: aux[id].numericColumns, quality: { rejectedRows: 0 }, ignored: 0 });
+            } catch (err) {
+              errors.push(`${key}：${err.message || err}`);
+            }
+            guard();
+          }
+          if (merged[side] && (aux['650'] || aux['941'])) merged[side].statsCtrl = await statsCtrl(t['537'], aux['650'], aux['941']).catch((err) => { errors.push(`控制信道 ${side}：${err.message || err}`); return null; });
+          for (const id of ['650', '941']) { await dropTable(`src_${side}${id}`).catch(() => {}); await unregisterFile(`${side}${id}`).catch(() => {}); }
         } catch (err) {
           errors.push(`合并方案 ${side}：${err.message || err}`);
         }

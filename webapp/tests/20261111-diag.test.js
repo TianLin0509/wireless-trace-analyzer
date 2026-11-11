@@ -129,3 +129,32 @@ describe('2026-11-11 真实回测第 6 轮修正', () => {
     expect(e.dtx1).toContain('DTX');
   });
 });
+
+import { ctrlFlags, ctrlRef } from '../src/engine/ctrl.js';
+
+describe('控制信道判读（650/941）', () => {
+  const base = (o = {}) => ({ dlN: 5000, dlFail: 0.5, n941: 2000, agg16: 2, ...o });
+  it('全小区均匀 2% 的 CCE 失败不标到单个用户（只在小区卡片）', () => {
+    const us = ['a', 'b', 'c', 'd'].map(() => base({ dlFail: 2 }));
+    expect(ctrlFlags(us[0], ctrlRef(us))).toEqual([]);
+  });
+  it('某用户 CCE 失败是中位 2 倍以上 → CCE 失败；全小区 > 5% → 每人都标严重', () => {
+    const us = [base(), base(), base(), base({ dlFail: 3 })];
+    expect(ctrlFlags(us[3], ctrlRef(us)).map((x) => x[0])).toEqual(['CCE 失败']);
+    const bad = ['a', 'b', 'c'].map(() => base({ dlFail: 9 }));
+    expect(ctrlFlags(bad[0], ctrlRef(bad))[0][0]).toBe('CCE 失败严重');
+  });
+  it('聚合 16 占比 ≥ 30% 且 ≥ 中位 2 倍 → 聚合级别高；样本不足不判', () => {
+    const us = [base(), base(), base(), base({ agg16: 45 })];
+    expect(ctrlFlags(us[3], ctrlRef(us)).map((x) => x[0])).toContain('聚合级别高');
+    expect(ctrlFlags({ ...us[3], n941: 10 }, ctrlRef(us))).toEqual([]);
+  });
+  it('控制信道证据并进诊断结论：已有 PDCCH 漏检时追加证据，没有时单独成立', () => {
+    const mk = (user, o = {}) => ({ user, tries: 1000, factors: { tries: 500, okRate: 0.98, rb: 60, layers: 1.6, eta: 500, pdcch: 0.99, decode: 0.9, ...o } });
+    const users = ['a', 'b', 'c', 'd', 'x'].map((u) => mk(u));
+    const r = concludeUsers({ rate: { users }, lim: null, linkFlagsByUser: new Map(), events: [], ctrlFlagsByUser: new Map([['x', [['聚合级别高', 'PDCCH 聚合级别 16 占 45%']]]]) });
+    const c = r.find((u) => u.user === 'x').causes;
+    expect(c[0].id).toBe('pdcch');
+    expect(c[0].evidence).toContain('聚合级别 16');
+  });
+});

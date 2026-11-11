@@ -23,7 +23,7 @@ const med = (xs) => { const v = xs.filter((x) => x != null && Number.isFinite(x)
  * 单侧（单小区或 A/B 的某一侧）每个用户的初判。
  * rate: rateFactors 结果；lim: limitShares 结果；link: linkDiag 结果 + flags(Map user→[[标签, 说明]])；events: detectEvents 的 events；t396: {userId→{rate, share}}
  */
-export function concludeUsers({ rate, lim, linkFlagsByUser, events, t396 }, R = CONCLUDE_RULES) {
+export function concludeUsers({ rate, lim, linkFlagsByUser, events, t396, ctrlFlagsByUser }, R = CONCLUDE_RULES) {
   const users = (rate?.users || []).filter((u) => u.tries >= R.minTries);
   const m = Object.fromEntries(FACTORS.map((f) => [f.id, med(users.map((u) => u.factors[f.id]))]));
   const evBy = new Map();
@@ -49,6 +49,13 @@ export function concludeUsers({ rate, lim, linkFlagsByUser, events, t396 }, R = 
     if (flags.includes('OLLA 深负')) add('optimistic', 'OLLA 外环累计量比用户中位低 2 阶以上', 2.5);
     if (flags.includes('BLER 超目标') || evHigh(u, 'nack')) add('fluct', [flags.includes('BLER 超目标') && 'BLER 比目标高 5 点以上', ev.nack && `连续 NACK 事件 ${ev.nack} 次`].filter(Boolean).join('，'), 2 + (ev.nack || 0) / 10);
     if ((ratio.pdcch != null && ratio.pdcch < 0.97) || evHigh(u, 'dtx')) add('pdcch', [ratio.pdcch != null && `PDCCH 送达 ${(u.factors.pdcch * 100).toFixed(1)}%（中位 ${(m.pdcch * 100).toFixed(1)}%）`, ev.dtx && `连续 DTX 事件 ${ev.dtx} 次`].filter(Boolean).join('，'), 2 + (ev.dtx || 0) / 20);
+    // 控制信道（650/941）：CCE 申请失败并进“调度不足”，聚合级别高并进“PDCCH 漏检”；原判没触发时单独成立
+    for (const [tag, text] of ctrlFlagsByUser?.get?.(u.user) || []) {
+      const id = tag.startsWith('CCE') ? 'sched' : 'pdcch';
+      const c = causes.find((x) => x.id === id);
+      if (c) c.evidence += `；${text}`;
+      else add(id, text, tag === 'CCE 失败严重' ? 2.5 : 1.3);
+    }
     if (flags.includes('MU 降阶大')) add('mu', 'MU MCS 比 SU 低 3 阶以上', 1.5);
     // 小包降阶和业务量不足是同一件事：已判数据受限时并进同一条证据，不另报
     if (flags.includes('小包降阶')) { const d = causes.find((c) => c.id === 'data'); if (d) d.evidence += '；MCS 主要在降阶步骤扣掉（小包降阶，正常机制）'; else add('data', '降阶步骤扣阶多（小包降阶）', 2.5); }

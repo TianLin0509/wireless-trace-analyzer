@@ -2,6 +2,8 @@
 // 纯函数部分不依赖浏览器，可在 Node 下单测。
 
 export const SUPPORTED_TRACES = ['396', '537', '714'];
+// 辅助跟踪：650（PDCCH CCE 申请）、941（PDCCH 聚合级别调整）。随批次一起识别和读取，但不参与批次判定、A/B 同文件检查与大小统计
+export const AUX_TRACES = ['650', '941'];
 const TRACE_RE = /Dest_T(\d{3,4})(?=_)/i;
 const TAIL_TS_RE = /_(\d{14})$/;
 const ANY_TS_RE = /(20\d{12})/g;
@@ -66,7 +68,7 @@ export function describeFile(entry) {
   const name = parts[parts.length - 1];
   if (!/\.csv$/i.test(name)) return null;
   const meta = parseTraceMeta(name);
-  if (!SUPPORTED_TRACES.includes(meta.traceId)) return null;
+  if (!SUPPORTED_TRACES.includes(meta.traceId) && !AUX_TRACES.includes(meta.traceId)) return null;
   return {
     ...meta,
     ...parseResultContext(parts),
@@ -109,13 +111,14 @@ export function buildCatalog(files) {
   for (const g of grouped.values()) {
     const traces = {};
     let ignored = 0;
-    for (const id of SUPPORTED_TRACES) {
+    for (const id of [...SUPPORTED_TRACES, ...AUX_TRACES]) {
       const cands = (g.traces[id] || []).slice().sort((a, b) => a.traceIndex - b.traceIndex || a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-      ignored += Math.max(0, cands.length - 1);
+      if (SUPPORTED_TRACES.includes(id)) ignored += Math.max(0, cands.length - 1);
       traces[id] = { selected: cands[0] || null, candidates: cands };
     }
     const first = SUPPORTED_TRACES.map((id) => traces[id].selected).find(Boolean) || {};
     const available = SUPPORTED_TRACES.filter((id) => traces[id].selected);
+    if (!available.length) continue; // 只有辅助跟踪的目录不成批次
     batches.push({
       batchId: g.contextKey ? `${first.contextLabel}::${g.ts}` : g.ts,
       testTimeRaw: g.ts === 'unknown' ? null : g.ts,

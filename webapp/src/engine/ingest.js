@@ -164,3 +164,30 @@ export async function ingestTable(key, file, traceId, wantedColumns, sniffed) {
 export async function dropTable(table) {
   await exec(`DROP TABLE IF EXISTS ${qi(table)}`);
 }
+
+/**
+ * 辅助跟踪（650 / 941）：只取需要的列，加一列归一化的用户键 __key_crnti（来自 rnti / crnti），不参与 537/714 的逐行合并。
+ * 650 表头有重名列（4 组搜索尝试），这里只取不重名的列。
+ */
+export async function ingestAux(key, file, wantedColumns, sniffed) {
+  const sniff = sniffed || (await sniffFile(file));
+  if (!sniff.columns.length) throw new Error(`CSV 为空或无法识别表头：${file.name}`);
+  const userKey = findColumn(sniff.columns, ['rnti', 'crnti']);
+  if (!userKey) throw new Error(`缺少用户字段 rnti：${file.name}`);
+  const name = await registerFile(key, file);
+  await dropRejects(key);
+  const count = new Map();
+  for (const c of sniff.columns) count.set(c, (count.get(c) || 0) + 1);
+  const numeric = new Set(sniff.numericColumns);
+  const selected = wantedColumns.filter((c) => count.get(c) === 1);
+  const parts = [`${normCrntiExpr(qi(userKey))} AS __key_crnti`, ...selected.map((c) => `${numeric.has(c) ? numExpr(qi(c)) : textExpr(qi(c))} AS ${qi(c)}`)];
+  const table = `src_${key}`;
+  try {
+    await exec(`CREATE OR REPLACE TABLE ${qi(table)} AS SELECT ${parts.join(', ')} FROM ${readCsvSql(name, sniff, key)}`);
+    const rows = Number(await scalar(`SELECT count(*) FROM ${qi(table)}`)) || 0;
+    if (!rows) throw new Error(`CSV 没有可用数据行：${file.name}`);
+    return { table, rows, columns: sniff.columns, selected, numericColumns: selected.filter((c) => numeric.has(c)) };
+  } finally {
+    await dropRejects(key);
+  }
+}

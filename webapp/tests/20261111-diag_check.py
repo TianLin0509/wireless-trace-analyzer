@@ -89,6 +89,12 @@ with sync_playwright() as p:
     checks["5007 快衰落 → 初传 BLER 最高"] = bool(bl) and max(bl, key=lambda k: bl[k] if bl[k] == bl[k] else -1) == "5007"
     checks["OLLA 深负只标少数用户（≤ 3 个）"] = sum("OLLA 深负" in v for v in flags.values()) <= 3
     checks["链路诊断一屏"] = s["sh"] <= s["ch"] + 4
+    s = visit(pg, "控制信道", "s5-ctrl", ".diag.ctrl tbody tr", 120000)
+    crow = nk(pg.evaluate("() => Object.fromEntries([...document.querySelectorAll('.diag.ctrl tbody tr')].map((tr) => [tr.children[0].textContent.trim(), tr.lastElementChild.textContent.trim()]))"))
+    notes["控制信道判读"] = crow
+    checks["控制信道：5006 判聚合级别高（PDCCH 覆盖差注入）"] = "聚合级别高" in crow.get("5006", "")
+    checks["控制信道：好用户 5004/5002 无判读"] = all(crow.get(u, "—") in ("—", "") for u in ("5004", "5002"))
+    checks["控制信道一屏"] = s["sh"] <= s["ch"] + 4
     s = visit(pg, "异常事件", "s3-events", ".diag-top.evt, .diag .banner.info", 180000)
     mat = pg.evaluate("() => Object.fromEntries([...document.querySelectorAll('.diag-top.evt tbody tr')].map((tr) => [tr.children[0].textContent.trim(), [...tr.children].slice(1).map((td) => td.textContent.trim())]))")
     mat = nk(mat)
@@ -121,6 +127,15 @@ with sync_playwright() as p:
     pg.get_by_role("button", name="开始分析").click()
     pg.wait_for_function(WAIT, timeout=300000)
     pg.wait_for_timeout(1500)
+    s = visit(pg, "控制信道", "ab5-ctrl-A", ".diag.ctrl .kcard", 120000)
+    fa = pg.locator(".diag.ctrl .kcard .big").first.inner_text()
+    pg.locator(".diag.ctrl .seg button", has_text="方案 B").click()
+    pg.wait_for_timeout(800)
+    pg.screenshot(path=f"{out}/ab5-ctrl-B.png")
+    fb = pg.locator(".diag.ctrl .kcard .big").first.inner_text()
+    notes["下行 CCE 失败 A / B"] = f"{fa} / {fb}"
+    checks["控制信道：B 侧下行 CCE 失败率高于 A（注入小区 CCE 失败）"] = float(fb.rstrip('%')) > float(fa.rstrip('%')) * 2
+    checks["控制信道（A/B）一屏"] = s["sh"] <= s["ch"] + 4
     s = visit(pg, "诊断结论", "ab0-conclude", ".concl-row", 180000)
     cell_line = pg.inner_text(".concl-cell")
     notes["A/B 小区结论"] = cell_line

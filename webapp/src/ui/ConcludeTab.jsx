@@ -5,6 +5,7 @@ import { useAsync } from './hooks.js';
 import { rateFactors, limitShares, linkDiag, detectEvents } from '../engine/diagnose.js';
 import { concludeUsers, concludeAb, commonCauses, CAUSES, CONCLUDE_RULES } from '../engine/conclude.js';
 import { linkFlags, linkRef } from './LinkTab.jsx';
+import { ctrlFlags, ctrlRef } from '../engine/ctrl.js';
 import { fmt, fmtInt, fmtPct } from './fmt.js';
 import { usePager, diagWhere, diagDeps } from './diagCommon.jsx';
 
@@ -16,7 +17,9 @@ export async function sideEvidence(side, t396Rows, key) {
   const ref = linkRef(link.users);
   const flags = new Map(link.users.map((u) => [u.user, linkFlags(u, ref)]));
   const t396 = new Map((t396Rows || []).map((r) => [r.userId, { rate: key === 'A' ? r.rateA : r.rateB, share: key === 'A' ? r.shareA : r.shareB }]));
-  return { rate, lim, link, events: ev.events, list: concludeUsers({ rate, lim, linkFlagsByUser: flags, events: ev.events, t396 }) };
+  const cu = side.statsCtrl?.users || [], cref = ctrlRef(cu);
+  const ctrlFlagsByUser = new Map(cu.map((u) => [u.user, ctrlFlags(u, cref)]));
+  return { rate, lim, link, events: ev.events, list: concludeUsers({ rate, lim, linkFlagsByUser: flags, events: ev.events, t396, ctrlFlagsByUser }) };
 }
 
 function CauseTags({ causes, max = 3 }) {
