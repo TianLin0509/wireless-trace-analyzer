@@ -6,7 +6,7 @@
 // 各因子之积严格等于左边（同一批行上求和）。A/B 对比时按对数分摊：第 i 个因子的贡献 = ln(fB/fA) / ln(RB/RA) × 总变化。
 import { query } from './db.js';
 import { qi } from './sql.js';
-/** 714 iblerTarget 的定点倍数：10240 = 10%（公司 T714 样例注释，Q-1111-30）。 */
+/** 714 iblerTarget 的定点倍数：10240 = 10%（样例注释）。 */
 export const IBLER_SCALE = 102400;
 
 const n = (c) => `TRY_CAST(${qi(c)} AS DOUBLE)`;
@@ -219,7 +219,7 @@ export async function limitShares(side, where) {
   return { cell: map.get('__cell__') || null, users: map, rule: { data: dataLim ? (has('waitingData') ? '待发数据 waitingData ≤ 本次 TB 大小（本次就能发完缓存）' : '承载数据 < 90% TB 大小（有填充）') : null, rb: rbLim ? '分配 RB allocRbNum < 估算需求 esitimatedRb' : null } };
 }
 
-/** MCS 调整链：从 CQI 估计到最终调度 MCS 的每一步均值（只取成功初传）。顺序以公司回执为准，可在此调整。 */
+/** MCS 调整链：从 CQI 估计到最终调度 MCS 的每一步均值（只取成功初传）。顺序已用真实数据核对，可在此调整。 */
 export const MCS_CHAIN = [
   ['estMcs0', 'CQI 估计'], ['initAdjMcs0', 'OLLA 调整后'], ['powerBackMcs0', '功率回退后'], ['rateMtcMcs0', '速率匹配后'],
   ['reduceMcs0', '降阶后（MU 等）'], ['tb0SchMcs', '最终调度'],

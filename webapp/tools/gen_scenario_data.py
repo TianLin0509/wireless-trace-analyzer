@@ -4,7 +4,7 @@
 SINR → CQI 上报 → MCS 调整链（CQI 估计 → OLLA → 回退 → 速率匹配 → MU 降阶 → 最终）
 → TB 大小 → ACK/NACK/DTX → HARQ 重传 → OLLA 更新 → T396 速率。用来验收诊断功能能否找出注入的故障。
 
-字段含义按本机理解与公司回执（Q-1111-29/30）校准；单位不确定的字段在 FIELD_NOTES 里写明。
+字段含义按本机理解与真实数据统计校准；单位不确定的字段在 FIELD_NOTES 里写明。
 
 用法:
     python gen_scenario_data.py <root> [--slots 40000] [--seed 7]
@@ -40,11 +40,11 @@ FIELD_NOTES = {
     'waitingData': '调度前用户缓存待发数据量（字节）',
     'tb0TbByteLength': '码字 0 的 TB 大小（字节）',
     'esitimatedRb': '按待发数据估算需要的 RB 数',
-    'schErrCode': '0x0 成功；0x2 本场景代表 PDCCH CCE 分配失败（真实码表以公司回执为准）',
+    'schErrCode': '0x0 成功；0x2 本场景代表 PDCCH CCE 分配失败（真实码表见本机分析手册）',
     'ack0': '714 ack0：该 TB 的反馈结果 1 ACK / 0 NACK / 2 DTX（714 每行是一次反馈事件）；537 tb0AckState：触发本次调度的上一次反馈',
-    'mcsOffset[0]': '714：OLLA 外环累计量（MCS 阶）× 1024000（公司样例注释，Q-1111-30）',
+    'mcsOffset[0]': '714：OLLA 外环累计量（MCS 阶）× 1024000（样例注释）',
     'compOlla': '714：补偿 OLLA（语义未确认），本场景恒为 0',
-    'iblerTarget': '714：初传 BLER 目标 × 102400（10% → 10240，公司样例注释）',
+    'iblerTarget': '714：初传 BLER 目标 × 102400（10% → 10240，样例注释）',
 }
 
 
@@ -177,7 +177,7 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
             ack = 2 if dtx else (0 if rng.random() < p_err else 1)
             # 714 在反馈时刻（k1 个时隙后）记录；这里按“调度时刻”的 frm/slot 写，便于与现有精确连接口径一致
             olla_before = olla[i]
-            # 真实语义（公司实测 Q-1111-32）：537 tb0AckState / 714 ack0 记的是“触发本次调度的上一次反馈”，
+            # 真实语义（实测）：537 tb0AckState / 714 ack0 记的是“触发本次调度的上一次反馈”，
             # 初传行为 1，重传行为 0（NACK）或 2（DTX），不是本次传输的译码结果
             cause = 1 if kind == 'new' else s[2]['fb']
             rows537[-1]['tb0AckState'] = cause

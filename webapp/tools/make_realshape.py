@@ -1,13 +1,13 @@
 """把 gen_scenario_data.py 的场景数据改写成“真实文件的样子”，测解析健壮性。
 
-真实 cellDT 与样例的格式差异（来自公司真实文件的列画像，只含统计量）：
+真实 cellDT 与样例的格式差异（来自真实文件的列画像，只含统计量）：
 逗号分隔 + UTF-8 BOM；537 表头末尾多一个空名列；714 表头有重名列（doubleDciFlg 出现两次）；
-大量常量列；十六进制字段（schErrCode 0x0 / 0x110261 等）；714 的 AI 字段用 '-' 表示无值；
+大量常量列；十六进制字段（schErrCode 0x0 与 0x11xxxx 形式的失败码）；714 的 AI 字段用 '-' 表示无值；
 schType 重传写作 DLSCH_TYPE_HARQ_DRB；mcsTable=1（256QAM 表）。
 
 用法: python make_realshape.py <场景根目录> <真实列画像.json> <输出根目录> [--drop 0.3]
 --drop：按比例随机丢弃 537/714 行，模拟跟踪丢包（真实跟踪常见大比例丢包）
-列画像 JSON 由家里从公司回执解析得到（只在本机，不入库）：{"537": {"cols": [...], "consts": {...}}, "714": ..., "396": ...}
+列画像 JSON 由使用者在本机准备（只在本机，不入库）：{"537": {"cols": [...], "consts": {...}}, "714": ..., "396": ...}
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def shape(df: pd.DataFrame, prof: dict, trace: str, rng) -> tuple[list[str], pd.
         ok = out['schErrCode'].astype(str) == '0x0'
         # 少量真实形态的失败码
         bad = ~ok
-        out.loc[bad, 'schErrCode'] = rng.choice(['0x110261', '0x110135', '0x110291'], size=int(bad.sum()))
+        out.loc[bad, 'schErrCode'] = rng.choice(['0x110001', '0x110002', '0x110003'], size=int(bad.sum()))
         out['schType'] = np.where(df['tb0ReTransTimes'] > 0, 'DLSCH_TYPE_HARQ_DRB', 'DLSCH_TYPE_DRB')
         out['mcsTable'] = 1
         out['rbgBitmap'] = '0xffffc000'

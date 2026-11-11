@@ -7,7 +7,7 @@ import { TRUNCATED_LIMIT } from './config.js';
 import { rankBase, initCond } from './diagnose.js';
 
 const v = (c) => `TRY_CAST(${qi(c)} AS DOUBLE)`;
-/** OLLA 指标优先用外环累计量 mcsOffset[0]（公司样例注释：外环累计量/1024000，单位 MCS 阶），没有再用 compOlla。 */
+/** OLLA 指标优先用外环累计量 mcsOffset[0]（样例注释：外环累计量/1024000，单位 MCS 阶），没有再用 compOlla。 */
 export const ollaColumn = (columns) => (columns.includes('714_mcsOffset0_scaled') ? '714_mcsOffset0_scaled' : columns.includes('714_compOlla_scaled') ? '714_compOlla_scaled' : null);
 const SPARK = Array.from({ length: 41 }, (_, i) => i / 40);
 
