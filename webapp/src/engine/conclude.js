@@ -14,7 +14,8 @@ export const CAUSES = {
   rb: { label: '分到的 RB 少', hint: '每次分到的 RB 比别人少：用户多、频域调度或业务量', tab: 'rate' },
 };
 
-export const CONCLUDE_RULES = { weak: 0.85, data: 50, fail: 5, minTries: 100, evMin: 3, evRel: 2, common: 0.6 };
+// 2026-11-11 真实数据回测后收紧：事件要求每千次初传 ≥ 2 次；信道差门限 75%；数据受限用户不再由小包的后果（MCS 降阶、RB 少、层数低）推出别的初判
+export const CONCLUDE_RULES = { weak: 0.85, channel: 0.75, data: 50, fail: 5, minTries: 100, evMin: 3, evRel: 2, evPerK: 2, common: 0.6 };
 
 const med = (xs) => { const v = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
 
@@ -33,7 +34,7 @@ export function concludeUsers({ rate, lim, linkFlagsByUser, events, t396 }, R = 
   // 事件按“每千次初传的事件数”与用户中位比：同小区大家都有的，是信道/小区的普遍现象，不单独算到某个用户头上
   const evRate = (u, t) => ((evBy.get(u.user) || {})[t] || 0) / u.tries * 1000;
   const evMed = { nack: med(users.map((u) => evRate(u, 'nack'))), dtx: med(users.map((u) => evRate(u, 'dtx'))) };
-  const evHigh = (u, t) => { const c = (evBy.get(u.user) || {})[t] || 0; return c >= R.evMin && (!evMed[t] || evRate(u, t) >= R.evRel * evMed[t]); };
+  const evHigh = (u, t) => { const c = (evBy.get(u.user) || {})[t] || 0; return c >= R.evMin && evRate(u, t) >= R.evPerK && (!evMed[t] || evRate(u, t) >= R.evRel * evMed[t]); };
   const out = [];
   for (const u of users) {
     const ratio = Object.fromEntries(FACTORS.map((f) => [f.id, m[f.id] && u.factors[f.id] != null ? u.factors[f.id] / m[f.id] : null]));
@@ -42,16 +43,20 @@ export function concludeUsers({ rate, lim, linkFlagsByUser, events, t396 }, R = 
     const ev = evBy.get(u.user) || {};
     const causes = [];
     const add = (id, evidence, w) => causes.push({ id, ...CAUSES[id], evidence, weight: w });
-    if (l?.data != null && l.data >= R.data) add('data', `${l.data.toFixed(0)}% 的初传一次就把缓存发完`, 3 + l.data / 50);
-    if (l?.fail != null && l.fail >= R.fail) add('sched', `调度失败 ${l.fail.toFixed(1)}%`, 2 + l.fail / 10);
+    const dataLimited = l?.data != null && l.data >= R.data;
+    if (dataLimited) add('data', `${l.data.toFixed(0)}% 的初传一次就把缓存发完`, 3 + l.data / 50);
+    if (l?.fail != null && l.fail >= R.fail) add('sched', `调度失败 ${l.fail.toFixed(1)}%${l.topCode ? `（主要失败码 ${l.topCode}，DRX/GAP 类属正常机制）` : ''}`, 2 + l.fail / 10);
     if (flags.includes('OLLA 深负')) add('optimistic', 'OLLA 外环累计量比用户中位低 2 阶以上', 2.5);
     if (flags.includes('BLER 超目标') || evHigh(u, 'nack')) add('fluct', [flags.includes('BLER 超目标') && 'BLER 比目标高 5 点以上', ev.nack && `连续 NACK 事件 ${ev.nack} 次`].filter(Boolean).join('，'), 2 + (ev.nack || 0) / 10);
     if ((ratio.pdcch != null && ratio.pdcch < 0.97) || evHigh(u, 'dtx')) add('pdcch', [ratio.pdcch != null && `PDCCH 送达 ${(u.factors.pdcch * 100).toFixed(1)}%（中位 ${(m.pdcch * 100).toFixed(1)}%）`, ev.dtx && `连续 DTX 事件 ${ev.dtx} 次`].filter(Boolean).join('，'), 2 + (ev.dtx || 0) / 20);
     if (flags.includes('MU 降阶大')) add('mu', 'MU MCS 比 SU 低 3 阶以上', 1.5);
-    if (ratio.eta != null && ratio.eta < R.weak && !flags.includes('OLLA 深负')) add('channel', `每RB每层比特为中位的 ${(ratio.eta * 100).toFixed(0)}%`, 1 + (1 - ratio.eta) * 3);
-    if (ratio.layers != null && ratio.layers < R.weak) add('rank', `层数为中位的 ${(ratio.layers * 100).toFixed(0)}%`, 1 + (1 - ratio.layers) * 2);
-    if (ratio.rb != null && ratio.rb < R.weak && !(l?.data >= R.data)) add('rb', `RB/次为中位的 ${(ratio.rb * 100).toFixed(0)}%`, 1 + (1 - ratio.rb) * 2);
+    if (flags.includes('小包降阶')) add('data', '降阶步骤扣阶多（小包降阶）', 2.5);
+    // 数据受限时，每RB每层比特低（小包降阶）、层数低、RB 少都是小包的结果，不再单列成别的原因
+    if (!dataLimited && ratio.eta != null && ratio.eta < R.channel && !flags.includes('OLLA 深负')) add('channel', `每RB每层比特为中位的 ${(ratio.eta * 100).toFixed(0)}%`, 1 + (1 - ratio.eta) * 3);
+    if (!dataLimited && ratio.layers != null && ratio.layers < R.weak) add('rank', `层数为中位的 ${(ratio.layers * 100).toFixed(0)}%`, 1 + (1 - ratio.layers) * 2);
+    if (!dataLimited && ratio.rb != null && ratio.rb < R.weak) add('rb', `RB/次为中位的 ${(ratio.rb * 100).toFixed(0)}%`, 1 + (1 - ratio.rb) * 2);
     causes.sort((a, b) => b.weight - a.weight);
+    for (let i = causes.length - 1; i > 0; i--) if (causes.findIndex((c) => c.id === causes[i].id) < i) causes.splice(i, 1);
     const r = t396?.get?.(u.user);
     out.push({ user: u.user, tries: u.tries, ratio, causes, events: ev, rate: r?.rate ?? null, share: r?.share ?? null, flags });
   }

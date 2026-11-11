@@ -84,3 +84,29 @@ describe('诊断结论：初判规则', () => {
     expect(r.users[0].main.id).toBe('eta');
   });
 });
+
+describe('真实数据回测后的规则（2026-11-11）', () => {
+  const mk = (user, o = {}, tries = 4000) => ({ user, tries, factors: { tries: 50, okRate: 1, rb: 245, layers: 1.84, eta: 700, pdcch: 1, decode: 0.95, ...o } });
+  const base = ['a', 'b', 'c', 'd', 'e'].map((u) => mk(u));
+  it('数据受限用户：不再由小包后果推出 信道差 / 层数低 / RB 少', () => {
+    const lim = { users: new Map([['x', { data: 95, fail: 0 }]]) };
+    const r = concludeUsers({ rate: { users: [...base, mk('x', { eta: 200, layers: 1, rb: 17 })] }, lim, linkFlagsByUser: new Map(), events: [] });
+    expect(r.find((u) => u.user === 'x').causes.map((c) => c.id)).toEqual(['data']);
+  });
+  it('事件稀疏（每千次初传不到 2 次）不判信道波动', () => {
+    const ev = [1, 2, 3, 4, 5].map(() => ({ user: 'y', type: 'nack' })); // 5 次 / 4000 初传 = 1.25‰
+    const r = concludeUsers({ rate: { users: [...base, mk('y')] }, lim: null, linkFlagsByUser: new Map(), events: ev });
+    expect(r.find((u) => u.user === 'y').causes).toEqual([]);
+  });
+  it('信道差门限 75%：0.83× 中位不报，0.6× 中位报', () => {
+    const r = concludeUsers({ rate: { users: [...base, mk('p', { eta: 582 }), mk('q', { eta: 420 })] }, lim: null, linkFlagsByUser: new Map(), events: [] });
+    expect(r.find((u) => u.user === 'p').causes).toEqual([]);
+    expect(r.find((u) => u.user === 'q').causes.map((c) => c.id)).toContain('channel');
+  });
+  it('扣阶集中在降阶一步 → 小包降阶，而不是链路扣阶多', () => {
+    const chain = [['estMcs0', 22], ['initAdjMcs0', 22], ['powerBackMcs0', 22], ['rateMtcMcs0', 21.7], ['reduceMcs0', 7.1], ['tb0SchMcs', 7.1]].map(([column, value]) => ({ column, label: column, value }));
+    const f = linkFlags({ user: 'z', n: 6000, chain, bler: 4, target: null }, { olla: null, loss: 0 }).map(([t]) => t);
+    expect(f).toContain('小包降阶');
+    expect(f).not.toContain('链路扣阶多');
+  });
+});

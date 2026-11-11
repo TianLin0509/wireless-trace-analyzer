@@ -221,6 +221,10 @@ export async function limitShares(side, where) {
   if (has('schErrCode')) {
     const codes = await query(`SELECT ${qi('schErrCode')} AS __c, count(*) AS __n FROM ${qi(side.table)} WHERE ${where} AND NOT ${e.err} GROUP BY 1 ORDER BY 2 DESC LIMIT 5`);
     const total = Number(map.get('__cell__')?.n) || 0;
+    const per = await query(`SELECT __u, __c FROM (SELECT ${e.user} AS __u, ${qi('schErrCode')} AS __c, count(*) AS __n,
+        row_number() OVER (PARTITION BY ${e.user} ORDER BY count(*) DESC) AS __k FROM ${qi(side.table)} WHERE ${where} AND NOT ${e.err} GROUP BY 1, 2) WHERE __k = 1`);
+    const hexOf = (v) => (typeof v === 'number' && Number.isFinite(v) ? '0x' + Math.round(v).toString(16) : String(v));
+    for (const r of per) { const x = map.get(r.__u); if (x) x.topCode = hexOf(r.__c); }
     topCodes = codes.map((r) => {
       const v = r.__c;
       const hex = typeof v === 'number' && Number.isFinite(v) ? '0x' + Math.round(v).toString(16) : String(v);

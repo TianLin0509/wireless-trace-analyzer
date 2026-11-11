@@ -28,7 +28,14 @@ export function linkFlags(u, cell, R = LINK_RULES) {
   if (u.olla != null && u.olla <= R.ollaLow && (cell?.olla == null || u.olla <= cell.olla - R.ollaRel)) out.push(['OLLA 深负', `外环累计量均值 ${fmt(u.olla, 1)} 阶，比用户中位 ${fmt(cell?.olla, 1)} 再低 ≥ ${R.ollaRel} 阶：CQI 长期偏乐观（CQI 虚高、干扰未体现在 CQI）`]);
   if (u.muMcs != null && u.suMcs != null && u.muShare >= 5 && u.muMcs - u.suMcs <= R.muGap) out.push(['MU 降阶大', `MU MCS 比 SU 低 ${fmt(u.suMcs - u.muMcs, 1)} 阶：配对干扰大`]);
   const lu = loss(u), lc = cell?.loss ?? null;
-  if (lu != null && lu >= R.chainLoss && (lc == null || lu >= lc + R.chainRel)) out.push(['链路扣阶多', `从 ${u.chain[0].label} 到 ${u.chain[u.chain.length - 1].label} 共扣 ${fmt(lu, 1)} 阶（用户中位 ${fmt(lc, 1)}）`]);
+  // 找扣得最多的一步：集中在“降阶”这一步多为小包降阶（数据少时主动用更稳的 MCS），不是链路问题
+  let worst = null;
+  for (let i = 1; i < u.chain.length; i++) {
+    const d = u.chain[i - 1].value != null && u.chain[i].value != null ? u.chain[i - 1].value - u.chain[i].value : null;
+    if (d != null && (!worst || d > worst.d)) worst = { d, label: u.chain[i].label, column: u.chain[i].column };
+  }
+  if (worst && worst.column === 'reduceMcs0' && worst.d >= R.chainLoss) out.push(['小包降阶', `降阶这一步平均扣 ${fmt(worst.d, 1)} 阶：数据少时主动降 MCS，属正常机制`]);
+  else if (lu != null && lu >= R.chainLoss && (lc == null || lu >= lc + R.chainRel)) out.push(['链路扣阶多', `从 ${u.chain[0].label} 到 ${u.chain[u.chain.length - 1].label} 共扣 ${fmt(lu, 1)} 阶（用户中位 ${fmt(lc, 1)}），扣得最多的是“${worst?.label}”`]);
   return out;
 }
 
