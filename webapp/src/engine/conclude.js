@@ -45,7 +45,10 @@ export function concludeUsers({ rate, lim, linkFlagsByUser, events, t396, ctrlFl
     const add = (id, evidence, w) => causes.push({ id, ...CAUSES[id], evidence, weight: w });
     const dataLimited = l?.data != null && l.data >= R.data;
     if (dataLimited) add('data', `${l.data.toFixed(0)}% 的初传一次就把缓存发完`, 3 + l.data / 50);
-    if (l?.fail != null && l.fail >= R.fail) add('sched', `调度失败 ${l.fail.toFixed(1)}%${l.topCode ? `（主要失败码 ${l.topCode}，DRX/GAP 类属正常机制）` : ''}`, 2 + l.fail / 10);
+    // 数据受限的用户，调度失败多发生在缓存不足一个 TB 时（外场实测失败时缓存中位只有 6 字节）：是“没数据可调”，并进业务量不足，不另报调度不足
+    const emptyFail = dataLimited && l?.failWait != null && l?.tb50 != null && l.failWait < l.tb50;
+    if (emptyFail && l.fail >= R.fail) causes.find((c) => c.id === 'data').evidence += `；调度失败 ${l.fail.toFixed(1)}% 多发生在缓存几乎为空时（失败时缓存中位 ${Math.round(l.failWait)} 字节，小于一个 TB）`;
+    else if (l?.fail != null && l.fail >= R.fail) add('sched', `调度失败 ${l.fail.toFixed(1)}%${l.topCode ? `（主要失败码 ${l.topCode}，DRX/GAP 类属正常机制）` : ''}`, 2 + l.fail / 10);
     if (flags.includes('OLLA 深负')) add('optimistic', 'OLLA 外环累计量比用户中位低 2 阶以上', 2.5);
     if (flags.includes('BLER 超目标') || evHigh(u, 'nack')) add('fluct', [flags.includes('BLER 超目标') && 'BLER 比目标高 5 点以上', ev.nack && `连续 NACK 事件 ${ev.nack} 次`].filter(Boolean).join('，'), 2 + (ev.nack || 0) / 10);
     if ((ratio.pdcch != null && ratio.pdcch < 0.97) || evHigh(u, 'dtx')) add('pdcch', [ratio.pdcch != null && `PDCCH 送达 ${(u.factors.pdcch * 100).toFixed(1)}%（中位 ${(m.pdcch * 100).toFixed(1)}%）`, ev.dtx && `连续 DTX 事件 ${ev.dtx} 次`].filter(Boolean).join('，'), 2 + (ev.dtx || 0) / 20);

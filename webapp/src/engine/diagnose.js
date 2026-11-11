@@ -228,13 +228,14 @@ export async function limitShares(side, where) {
   const rbLim = has('esitimatedRb') && e.rb ? `${e.rb} < ${n('esitimatedRb')}` : null;
   if (!dataLim && !rbLim && !has('schErrCode')) return null;
   const rows = await query(`WITH b AS (SELECT ${e.user} AS __u, ${e.err} AS __ok, ${e.init} AS __init,
-        ${dataLim ? `(${dataLim})` : 'NULL'} AS __dl, ${rbLim ? `(${rbLim})` : 'NULL'} AS __rl FROM ${qi(side.table)} WHERE ${where})
+        ${dataLim ? `(${dataLim})` : 'NULL'} AS __dl, ${rbLim ? `(${rbLim})` : 'NULL'} AS __rl, ${has('waitingData') ? n('waitingData') : 'NULL'} AS __w, ${tb || 'NULL'} AS __tb FROM ${qi(side.table)} WHERE ${where})
     SELECT CASE WHEN grouping(__u) = 1 THEN '__cell__' ELSE __u END AS __g, count(*) FILTER (WHERE __init) AS __n,
       avg(CASE WHEN __ok THEN 0.0 ELSE 1.0 END) FILTER (WHERE __init) * 100 AS __fail,
       avg(CASE WHEN __dl THEN 1.0 ELSE 0.0 END) FILTER (WHERE __init AND __ok AND __dl IS NOT NULL) * 100 AS __data,
-      avg(CASE WHEN __rl THEN 1.0 ELSE 0.0 END) FILTER (WHERE __init AND __ok AND __rl IS NOT NULL) * 100 AS __rbl
+      avg(CASE WHEN __rl THEN 1.0 ELSE 0.0 END) FILTER (WHERE __init AND __ok AND __rl IS NOT NULL) * 100 AS __rbl,
+      median(__w) FILTER (WHERE __init AND NOT __ok) AS __failWait, median(__tb) FILTER (WHERE __init AND __ok AND __tb > 0) AS __tb50
     FROM b GROUP BY GROUPING SETS ((__u), ())`);
-  const map = new Map(rows.map((r) => [r.__g, { n: Number(r.__n), fail: r.__fail, data: r.__data, rb: r.__rbl }]));
+  const map = new Map(rows.map((r) => [r.__g, { n: Number(r.__n), fail: r.__fail, data: r.__data, rb: r.__rbl, failWait: r.__failWait, tb50: r.__tb50 }]));
   // 失败码 Top：十六进制字段读入后是数值，显示时转回 0x 形式
   let topCodes = [];
   if (has('schErrCode')) {

@@ -165,3 +165,19 @@ describe('控制信道：小样本不判', () => {
     expect(ctrlFlags(us[2], ctrlRef(us))).toEqual([]);
   });
 });
+
+describe('数据受限用户的调度失败', () => {
+  const mk = (user, o = {}) => ({ user, tries: 1000, factors: { tries: 500, okRate: 0.98, rb: 60, layers: 1.6, eta: 500, pdcch: 0.99, decode: 0.9, ...o } });
+  const base = ['a', 'b', 'c', 'd'].map((u) => mk(u));
+  it('失败时缓存不足一个 TB → 并进业务量不足，不另报调度不足', () => {
+    const lim = { users: new Map([['x', { data: 99, fail: 30, failWait: 6, tb50: 217 }]]) };
+    const c = concludeUsers({ rate: { users: [...base, mk('x')] }, lim, linkFlagsByUser: new Map(), events: [] }).find((u) => u.user === 'x').causes;
+    expect(c.map((x) => x.id)).toEqual(['data']);
+    expect(c[0].evidence).toContain('缓存几乎为空');
+  });
+  it('失败时缓存充足 → 仍报调度不足', () => {
+    const lim = { users: new Map([['x', { data: 99, fail: 30, failWait: 5000, tb50: 217 }]]) };
+    const c = concludeUsers({ rate: { users: [...base, mk('x')] }, lim, linkFlagsByUser: new Map(), events: [] }).find((u) => u.user === 'x').causes;
+    expect(c.map((x) => x.id)).toContain('sched');
+  });
+});
