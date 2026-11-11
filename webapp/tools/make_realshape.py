@@ -5,7 +5,8 @@
 大量常量列；十六进制字段（schErrCode 0x0 / 0x110261 等）；714 的 AI 字段用 '-' 表示无值；
 schType 重传写作 DLSCH_TYPE_HARQ_DRB；mcsTable=1（256QAM 表）。
 
-用法: python make_realshape.py <场景根目录> <真实列画像.json> <输出根目录>
+用法: python make_realshape.py <场景根目录> <真实列画像.json> <输出根目录> [--drop 0.3]
+--drop：按比例随机丢弃 537/714 行，模拟跟踪丢包（真实跟踪常见大比例丢包）
 列画像 JSON 由家里从公司回执解析得到（只在本机，不入库）：{"537": {"cols": [...], "consts": {...}}, "714": ..., "396": ...}
 """
 from __future__ import annotations
@@ -76,11 +77,14 @@ def shape(df: pd.DataFrame, prof: dict, trace: str, rng) -> tuple[list[str], pd.
 
 def main():
     src, prof_path, dst = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+    drop = float(sys.argv[sys.argv.index('--drop') + 1]) if '--drop' in sys.argv else 0.0
     prof = json.loads(prof_path.read_text(encoding='utf-8'))
     rng = np.random.default_rng(3)
     for f in src.rglob('Dest_T*.csv'):
         trace = f.name.split('_')[1][1:]
         df = pd.read_csv(f, sep='\t')
+        if drop and trace in ('537', '714'):
+            df = df[rng.random(len(df)) >= drop].reset_index(drop=True)
         header, out = shape(df, prof[trace], trace, rng)
         rel = f.relative_to(src)
         stamp = f.stem.rsplit('_', 1)[1]

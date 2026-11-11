@@ -41,7 +41,7 @@ FIELD_NOTES = {
     'tb0TbByteLength': '码字 0 的 TB 大小（字节）',
     'esitimatedRb': '按待发数据估算需要的 RB 数',
     'schErrCode': '0x0 成功；0x2 本场景代表 PDCCH CCE 分配失败（真实码表以公司回执为准）',
-    'ack0': '714：1 ACK、0 NACK、2 DTX',
+    'ack0': '714 ack0：该 TB 的反馈结果 1 ACK / 0 NACK / 2 DTX（714 每行是一次反馈事件）；537 tb0AckState：触发本次调度的上一次反馈',
     'mcsOffset[0]': '714：OLLA 外环累计量（MCS 阶）× 1024000（公司样例注释，Q-1111-30）',
     'compOlla': '714：补偿 OLLA（语义未确认），本场景恒为 0',
     'iblerTarget': '714：初传 BLER 目标 × 102400（10% → 10240，公司样例注释）',
@@ -147,7 +147,7 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
                 data = 0
             else:
                 bits_per_rb = RE_PER_RB * SE[final] * layers
-                need_rb = int(math.ceil(buf[i] * 8 / bits_per_rb)) if buf[i] > 0 else 0
+                need_rb = min(RB_TOTAL, int(math.ceil(buf[i] * 8 / bits_per_rb))) if buf[i] > 0 else 0  # 真实 esitimatedRb 封顶 273
                 rb = min(need_rb, share, rb_left)
                 tbs = int(rb * bits_per_rb / 8)
                 data = int(min(buf[i], tbs))
@@ -175,15 +175,22 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
             p_err = 1 / (1 + math.exp(1.6 * (sinr[i] + gain - REQ[final] + 0.5)))
             dtx = rng.random() < p.get('dtx', 0.002) * (6 if p.get('dtx') and 0.2 < frac < 0.3 else 1)
             ack = 2 if dtx else (0 if rng.random() < p_err else 1)
-            rows537[-1]['tb0AckState'] = ack
             # 714 在反馈时刻（k1 个时隙后）记录；这里按“调度时刻”的 frm/slot 写，便于与现有精确连接口径一致
             olla_before = olla[i]
+            # 真实语义（公司实测 Q-1111-32）：537 tb0AckState / 714 ack0 记的是“触发本次调度的上一次反馈”，
+            # 初传行为 1，重传行为 0（NACK）或 2（DTX），不是本次传输的译码结果
+            cause = 1 if kind == 'new' else s[2]['fb']
+            rows537[-1]['tb0AckState'] = cause
             if retx == 0 and ack in (0, 1):
                 olla[i] += 0.0556 if ack == 1 else -0.5
                 olla[i] = float(np.clip(olla[i], -12, 6))
+            # 714 = 反馈事件：在反馈时刻（k1 = 3 个时隙后）记一行，ack0 = 这个 TB 的结果，retansNum0 = 它是第几次重传
+            tf = t + 3
+            secf = 23 * 3600 + tf // SLOTS_PER_SEC
             rows714.append({
-                'crnti': 17000 + (u - 5000) * 13, 'HH:MM:SS': hhmmss, 'frm': frm, 'slotNum': slot, 'rptTti': tti + 3, 'ueid': u - 4000,
-                'harqNo': harq, 'ack0': ack, 'ack1': 1 if layers == 2 and ack == 1 else (0 if layers == 2 else 2), 'retansNum0': retx,
+                'crnti': 17000 + (u - 5000) * 13, 'HH:MM:SS': f'{(secf // 3600) % 24:02d}:{(secf // 60) % 60:02d}:{secf % 60:02d}',
+                'frm': (tf // 20) % 1024, 'slotNum': tf % 20, 'rptTti': tti + 3, 'ueid': u - 4000,
+                'harqNo': harq, 'ack0': ack, 'ack1': 0, 'retansNum0': retx, 'trcItem': 0,
                 'isMuFlag': int(is_mu), 'mcsOffset[0]': int(round(olla_before * SCALE)), 'compOlla': 0,
                 'iblerTarget': 10240, 'currAdjStep': 56936 if ack == 1 else -512000, 'suRank': layers, 'rankRpt': layers,
                 'wbCqi4Bit0Type1': int(np.clip(round((cqi_sinr[i] + 6) / 2), 0, 15)), 'mcsBfCwFlter0': est_mcs, 'mcsCwRankFlter0': init_adj,
@@ -199,7 +206,7 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
                 pending.pop((i, harq), None)
             else:
                 if retx < 3:
-                    pending[(i, harq)] = dict(retx=retx, mcs=final, rb=rb, layers=layers, tbs=tbs, due=t + 8, data=data if kind == 'new' else s[2]['data'])
+                    pending[(i, harq)] = dict(retx=retx, mcs=final, rb=rb, layers=layers, tbs=tbs, due=t + 8, data=data if kind == 'new' else s[2]['data'], fb=ack)
                     if kind == 'new':
                         buf[i] = max(0, buf[i] - data)
                 else:
@@ -213,8 +220,8 @@ def run(scheme: str, slots: int, seed: int, cce_fail: float):
         if (t + 1) % period == 0:
             for i, u in enumerate(users):
                 if active[i] > 2:
-                    # 掐头去尾近似：去掉最后一个时隙；vol 单位 bit，time 单位 ms（0.5 ms / 时隙）
-                    rows396.append(dict(tti=tti, dlAmbr=u, susrId=u - 4900, dlThpVolRmvLastSlot=int(delivered[i]), dlThpTimeRmvLastSlot=int((active[i] - 1) * 0.5)))
+                    # 掐头去尾近似：去掉最后一个时隙；真实单位 vol = 字节、time = 微秒（0.5 ms / 时隙 = 500 μs），Rate×8 = Mbps
+                    rows396.append(dict(tti=tti, dlAmbr=u, susrId=u - 4900, dlThpVolRmvLastSlot=int(delivered[i] / 8), dlThpTimeRmvLastSlot=int((active[i] - 1) * 500)))
             delivered[:] = 0; active[:] = 0
     return pd.DataFrame(rows396), pd.DataFrame(rows537), pd.DataFrame(rows714)
 

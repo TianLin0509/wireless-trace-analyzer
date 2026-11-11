@@ -52,6 +52,15 @@ with sync_playwright() as p:
     pg.wait_for_timeout(1500)
     tabs = pg.locator(".tabs button").all_inner_texts()
     checks["单小区页签含 速率拆解/链路诊断/异常事件/时间轴"] = all(t in tabs for t in ["速率拆解", "链路诊断", "异常事件", "时间轴"])
+    s = visit(pg, "诊断结论", "s0-conclude", ".concl-row", 180000)
+    concl = nk(pg.evaluate("() => Object.fromEntries([...document.querySelectorAll('.concl-row')].map((r) => [r.querySelector('.concl-id b').textContent.trim(), [...r.querySelectorAll('.concl-body .tag')].map((t) => t.textContent)]))"))
+    notes["诊断结论"] = concl
+    checks["结论：5008 首要问题 = 业务量不足"] = (concl.get("5008") or [""])[0].startswith("业务量不足")
+    checks["结论：5005 含 CQI 偏乐观"] = any("CQI 偏乐观" in t for t in concl.get("5005", []))
+    checks["结论：5006 含 PDCCH 漏检"] = any("PDCCH 漏检" in t for t in concl.get("5006", []))
+    checks["结论：5007 含 信道波动大"] = any("信道波动" in t for t in concl.get("5007", []))
+    checks["结论：5004 / 5002（好用户）首要问题不是链路类"] = all(not any(k in (concl.get(u) or [""])[0] for k in ("CQI", "波动", "PDCCH")) for u in ("5004", "5002"))
+    checks["诊断结论一屏"] = s["sh"] <= s["ch"] + 4
     s = visit(pg, "速率拆解", "s1-rate", ".factor-cards .kcard")
     rows = pg.evaluate("() => [...document.querySelectorAll('.diag .section tbody tr')].map((tr) => [...tr.children].map((td) => td.textContent.trim()))")
     si = head_idx = None
@@ -108,6 +117,14 @@ with sync_playwright() as p:
     pg.get_by_role("button", name="开始分析").click()
     pg.wait_for_function(WAIT, timeout=300000)
     pg.wait_for_timeout(1500)
+    s = visit(pg, "诊断结论", "ab0-conclude", ".concl-row", 180000)
+    cell_line = pg.inner_text(".concl-cell")
+    notes["A/B 小区结论"] = cell_line
+    checks["A/B 结论：小区一句话含 调度成功率"] = "调度成功率" in cell_line
+    abc = nk(pg.evaluate("() => Object.fromEntries([...document.querySelectorAll('.concl-row')].map((r) => [r.querySelector('.concl-id b').textContent.trim(), r.querySelector('.concl-body').innerText]))"))
+    notes["A/B 用户结论"] = abc
+    checks["A/B 结论：5003 主因 每RB每层比特"] = "每RB每层比特" in abc.get("5003", "").splitlines()[0] if abc.get("5003") else False
+    checks["A/B 诊断结论一屏"] = s["sh"] <= s["ch"] + 4
     s = visit(pg, "速率拆解", "ab1-rate", ".diag .section tbody tr")
     ab = pg.evaluate("() => [...document.querySelectorAll('.diag .section tbody tr')].map((tr) => [...tr.children].map((td) => td.textContent.trim()))")
     main = nk({r[0]: r[-1] for r in ab})

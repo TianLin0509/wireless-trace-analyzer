@@ -4,7 +4,7 @@ import { query } from './db.js';
 import { qi } from './sql.js';
 import { filterSql, userScope } from './query.js';
 import { MAX_CHART_POINTS, TRUNCATED_LIMIT } from './config.js';
-import { rankBase } from './diagnose.js';
+import { rankBase, initCond } from './diagnose.js';
 
 const QUANTS = Array.from({ length: 101 }, (_, i) => i / 100);
 const SPARK_QUANTS = Array.from({ length: 41 }, (_, i) => i / 40);
@@ -77,19 +77,19 @@ export async function userBreakdown(side, where) {
 // ---------- 结论卡片 ----------
 
 const CARD_DEFS = [
-  { id: 'mcs', label: 'cw0SuMcs 均值', column: 'cw0SuMcs', kind: 'mean', better: 'up', unit: '', digits: 2, minDelta: 0.3, chart: 'cw0SuMcs' },
+  { id: 'mcs', label: 'cw0SuMcs 均值（初传）', column: 'cw0SuMcs', initOnly: true, kind: 'mean', better: 'up', unit: '', digits: 2, minDelta: 0.3, chart: 'cw0SuMcs' },
   { id: 'bler', label: 'BLER（714 ack0，剔除 DTX）', column: '714_ack0', kind: 'bler', better: 'down', unit: '%', digits: 2, minDelta: 0.5, chart: '714_ack0' },
   { id: 'rank2', label: '多流占比（≥ 2 层）', column: 'schRank', kind: 'share', test: (x, base = 0) => `${x} + ${base} >= 2`, better: 'up', unit: '%', digits: 1, minDelta: 1, chart: 'schRank' },
   { id: 'trunc', label: `截包占比（0 < data < ${TRUNCATED_LIMIT}）`, column: 'usrschpdschDrbData', kind: 'share', test: (x) => `${x} > 0 AND ${x} < ${TRUNCATED_LIMIT}`, better: 'down', unit: '%', digits: 2, minDelta: 0.5, chart: 'usrschpdschDrbData' },
   { id: 'olla', label: 'OLLA 外环累计量（mcsOffset÷1024000）', column: '714_mcsOffset0_scaled', kind: 'mean', better: null, unit: 'MCS 阶', digits: 2, minDelta: 0.2, chart: '714_mcsOffset0_scaled' },
-  { id: 'tb0', label: 'tb0SchMcs 均值', column: 'tb0SchMcs', kind: 'mean', better: 'up', unit: '', digits: 2, minDelta: 0.3, chart: 'tb0SchMcs' },
+  { id: 'tb0', label: 'tb0SchMcs 均值（初传）', column: 'tb0SchMcs', initOnly: true, kind: 'mean', better: 'up', unit: '', digits: 2, minDelta: 0.3, chart: 'tb0SchMcs' },
 ];
 
 async function cardSide(side, def, where) {
   if (!side || !side.columns.includes(def.column)) return null;
   const x = v(def.column);
   if (def.kind === 'mean') {
-    const s = await metricSummary(side, def.column, where, SPARK_QUANTS);
+    const s = await metricSummary(side, def.column, def.initOnly ? `${where} AND ${initCond(side.columns)}` : where, SPARK_QUANTS);
     return { value: s.mean, n: s.count, sd: s.sd, cdf: s.cdf };
   }
   if (def.kind === 'bler') {

@@ -29,6 +29,47 @@ export async function rankBase(side) {
   return r?.m === 0 ? 1 : 0;
 }
 
+/**
+ * 714 独立统计（不经 537 连接）：714 每行是一次 HARQ 反馈事件，537 每行是一次调度事件，按同一时隙逐行配对其实配的是不同的 TB，
+ * 真实数据里也只能配上一半左右。所以初传 BLER、DTX、OLLA 直接在 714 原表上按用户统计：
+ * 初传 = retansNum0 = 0（有 trcItem 时再要求 trcItem = 0）；BLER = NACK ÷ (ACK + NACK)；DTX 率 = ack0 = 2 ÷ 全部反馈。
+ * 用户归属：用 537 里 crnti → ambr 的对应（同一 crnti 取出现最多的 ambr）。
+ */
+export async function stats714(src537, src714) {
+  if (!src537 || !src714) return null;
+  const has = (c) => src714.selected.includes(c);
+  if (!has('ack0')) return null;
+  const a = n('ack0');
+  const init = [has('retansNum0') ? `coalesce(${n('retansNum0')}, 0) = 0` : 'TRUE', has('trcItem') ? `coalesce(${n('trcItem')}, 0) = 0` : 'TRUE'].join(' AND ');
+  const olla = has('mcsOffset[0]') ? `${n('mcsOffset[0]')} / ${1024000}` : null;
+  const userCol = src537.selected.includes('ambr') ? 'ambr' : null;
+  const map = userCol
+    ? `map AS (SELECT __key_crnti AS k, CAST(${qi(userCol)} AS VARCHAR) AS u, count(*) AS c FROM ${qi(src537.table)} WHERE ${qi(userCol)} IS NOT NULL AND __key_crnti IS NOT NULL
+        GROUP BY 1, 2 QUALIFY row_number() OVER (PARTITION BY k ORDER BY c DESC) = 1),`
+    : '';
+  const rows = await query(`WITH ${map} f AS (
+      SELECT ${userCol ? `coalesce(map.u, '未映射')` : `'小区'`} AS __u, ${a} AS __a, (${init}) AS __i, ${olla || 'NULL'} AS __o,
+        ${has('iblerTarget') ? n('iblerTarget') : 'NULL'} AS __g
+      FROM ${qi(src714.table)} l ${userCol ? 'LEFT JOIN map ON l.__key_crnti = map.k' : ''})
+    SELECT CASE WHEN grouping(__u) = 1 THEN '__cell__' ELSE __u END AS __g2, count(*) AS __n,
+      count(*) FILTER (WHERE __i AND __a = 1) AS __ack, count(*) FILTER (WHERE __i AND __a = 0) AS __nack, count(*) FILTER (WHERE __a = 2) AS __dtx,
+      avg(__o) AS __olla, quantile_cont(__o, 0.1) AS __olla10, avg(__g) / ${IBLER_SCALE} * 100 AS __target
+    FROM f GROUP BY GROUPING SETS ((__u), ())`);
+  const pack = (r) => {
+    const ack = Number(r.__ack) || 0, nack = Number(r.__nack) || 0, nAll = Number(r.__n) || 0, dtx = Number(r.__dtx) || 0;
+    return { n: nAll, initFeedback: ack + nack, bler: ack + nack ? (nack / (ack + nack)) * 100 : null, dtx: nAll ? (dtx / nAll) * 100 : null, olla: r.__olla, olla10: r.__olla10, target: r.__target };
+  };
+  const byUser = new Map(rows.filter((r) => r.__g2 !== '__cell__').map((r) => [r.__g2, pack(r)]));
+  const cellRow = rows.find((r) => r.__g2 === '__cell__');
+  const unmapped = byUser.get('未映射')?.n || 0;
+  return { cell: cellRow ? pack(cellRow) : null, byUser, unmappedShare: cellRow ? (unmapped / Number(cellRow.__n)) * 100 : null, rule: `714 原表：初传 = retansNum0 = 0${has('trcItem') ? ' 且 trcItem = 0' : ''}；BLER = NACK ÷ (ACK + NACK)；DTX = ack0 = 2 的反馈占比` };
+}
+
+/** 只取初传的条件：真实 537 重传行的 tb0SchMcs 是 28–31（256QAM 表保留给重传的编号），混进均值会把 MCS 拉高。 */
+export function initCond(columns) {
+  return diagExprs(columns).init;
+}
+
 /** 速率拆解的因子定义（顺序即瀑布顺序）。 */
 export const FACTORS = [
   { id: 'tries', label: '调度机会', unit: '次/千TTI', hint: '每 1000 个有调度记录的 TTI 里，该用户被调度（含失败）的初传次数；反映用户数、优先级与业务是否连续' },
@@ -36,8 +77,8 @@ export const FACTORS = [
   { id: 'rb', label: 'RB/次', unit: 'RB', hint: '每次成功初传分到的 RB 数；低于需求说明资源受限' },
   { id: 'layers', label: '层数', unit: '层', hint: '按 RB 加权的调度层数（schRank）' },
   { id: 'eta', label: '每RB每层比特', unit: 'bit', hint: 'TB 比特 ÷ (RB × 层数)，反映 MCS 与可用 RE；无 TB 字段时按 MCS 查表估算' },
-  { id: 'pdcch', label: 'PDCCH送达', unit: '%', pct: true, hint: '1 − DTX 占比（按比特加权）：UE 没收到调度时 HARQ 反馈为 DTX' },
-  { id: 'decode', label: '初传译码成功', unit: '%', pct: true, hint: '1 − 初传 BLER（剔除 DTX，按比特加权）' },
+  { id: 'pdcch', label: 'PDCCH送达', unit: '%', pct: true, hint: '1 − DTX 占比：UE 没收到 PDCCH 时 HARQ 反馈为 DTX；有重传次数字段时 = 1 − DTX 引起的首次重传 ÷ 初传数' },
+  { id: 'decode', label: '初传译码成功', unit: '%', pct: true, hint: '1 − 初传 BLER。有重传次数字段时 = 1 − 首次重传数 ÷ 初传数（真实 ACK 字段记的是上一次反馈，不能逐行配对）' },
 ];
 
 /** 识别可用字段，生成各子表达式。 */
@@ -47,9 +88,11 @@ export function diagExprs(columns, opts = {}) {
   const err = has('schErrCode')
     ? `(${qi('schErrCode')} IS NULL OR lower(trim(CAST(${qi('schErrCode')} AS VARCHAR))) IN ('0','0x0','0x00','0x0000','0.0',''))`
     : (has('allocRbNum') ? `(${n('allocRbNum')} > 0)` : 'TRUE');
+  // 初传判定优先级：537 重传次数 → 537 调度类型（真实重传写作 DLSCH_TYPE_HARQ_DRB / DTX_DRB）→ 714 重传次数（只覆盖连接上的行，最后才用）
+  const st = `upper(coalesce(CAST(${qi('schType')} AS VARCHAR), ''))`;
   const init = has('tb0ReTransTimes') ? `(coalesce(${n('tb0ReTransTimes')}, 0) = 0)`
-    : has('714_retansNum0') ? `(coalesce(${n('714_retansNum0')}, 0) = 0)`
-      : has('schType') ? `(upper(CAST(${qi('schType')} AS VARCHAR)) NOT LIKE '%RETRAN%' AND upper(CAST(${qi('schType')} AS VARCHAR)) NOT LIKE '%RETX%')` : 'TRUE';
+    : has('schType') ? `(${st} NOT LIKE '%RETRAN%' AND ${st} NOT LIKE '%RETX%' AND ${st} NOT LIKE '%HARQ%' AND ${st} NOT LIKE '%DTX%')`
+      : has('714_retansNum0') ? `(coalesce(${n('714_retansNum0')}, 0) = 0)` : 'TRUE';
   const rb = has('allocRbNum') ? `coalesce(${n('allocRbNum')}, 0)` : null;
   const layers = has('schRank') ? `greatest(coalesce(${n('schRank')}, 0) + ${rb0}, 1)` : '1';
   const mcs = has('tb0SchMcs') ? n('tb0SchMcs') : has('cw0SuMcs') ? n('cw0SuMcs') : null;
@@ -70,7 +113,10 @@ export function diagExprs(columns, opts = {}) {
     : has('tb0AckState') ? n('tb0AckState') : has('714_ack0') ? n('714_ack0') : null;
   const ackSource = has('tb0AckState') ? '537 tb0AckState' + (has('714_ack0') ? '（缺失时用 714 ack0）' : '') : has('714_ack0') ? '714 ack0' : null;
   const user = has('ambr') ? `CAST(${qi('ambr')} AS VARCHAR)` : `'小区'`;
-  return { has, err, init, rb, layers, bits, bitsSource, ack, ackSource, rankBase: rb0, user, tti: has('tti') ? n('tti') : null };
+  // 首次重传：真实 537 的 ACK 字段是“上一次反馈”，所以初传 BLER = 首次重传数 / 初传数（DTX 引起的单独计）
+  const retx1 = has('tb0ReTransTimes') ? `(${n('tb0ReTransTimes')} = 1)` : null;
+  const dtxRow = `(${ack ? `coalesce(${ack} = 2, FALSE)` : 'FALSE'}${has('schType') ? ` OR upper(CAST(${qi('schType')} AS VARCHAR)) LIKE '%DTX%'` : ''})`;
+  return { has, err, init, rb, layers, bits, bitsSource, ack, ackSource, retx1, dtxRow, rankBase: rb0, user, tti: has('tti') ? n('tti') : null };
 }
 
 /**
@@ -91,7 +137,7 @@ export async function rateFactors(side, where) {
   const [span] = await query(`SELECT ${e.tti ? `count(DISTINCT ${e.tti})` : 'count(*)'} AS __span FROM ${qi(side.table)} WHERE ${where}`);
   const rows = await query(`WITH b AS (
       SELECT ${e.user} AS __u, ${e.err} AS __ok, ${e.init} AS __init, ${e.rb} AS __rb, ${e.layers} AS __l,
-        ${e.bits} AS __bits, ${e.ack || 'NULL'} AS __ack
+        ${e.bits} AS __bits, ${e.ack || 'NULL'} AS __ack, ${e.retx1 || 'FALSE'} AS __r1, ${e.dtxRow} AS __dtxr
       FROM ${qi(side.table)} WHERE ${where})
     SELECT CASE WHEN grouping(__u) = 1 THEN '__cell__' ELSE __u END AS __g,
       count(*) FILTER (WHERE __init) AS __tries,
@@ -102,8 +148,11 @@ export async function rateFactors(side, where) {
       sum(${valid}) FILTER (WHERE __init AND __ok) AS __vbits,
       sum(${nonDtx}) FILTER (WHERE __init AND __ok) AS __ndbits,
       sum(${ackOk}) FILTER (WHERE __init AND __ok) AS __abits,
-      count(*) FILTER (WHERE __init AND __ok AND __ack IS NOT NULL) AS __matched
+      count(*) FILTER (WHERE __init AND __ok AND __ack IS NOT NULL) AS __matched,
+      count(*) FILTER (WHERE __r1 AND __ok AND NOT __dtxr) AS __r1nack,
+      count(*) FILTER (WHERE __r1 AND __ok AND __dtxr) AS __r1dtx
     FROM b GROUP BY GROUPING SETS ((__u), ())`);
+  const viaRetx = !!e.retx1;
   const S = Number(span?.__span) || 1;
   const build = (r) => {
     const tries = Number(r.__tries) || 0, ok = Number(r.__okn) || 0, rbs = Number(r.__rbs) || 0, rbl = Number(r.__rbl) || 0;
@@ -117,6 +166,11 @@ export async function rateFactors(side, where) {
       pdcch: e.ack ? (vb ? nd / vb : null) : 1,
       decode: e.ack ? (nd ? ab / nd : null) : 1,
     };
+    if (viaRetx && ok) {
+      const d1 = Number(r.__r1dtx) || 0, n1 = Number(r.__r1nack) || 0;
+      f.pdcch = Math.max(0, 1 - d1 / ok);
+      f.decode = ok > d1 ? Math.max(0, 1 - n1 / (ok - d1)) : null;
+    }
     // 每 TTI 初传确认比特 = 各因子之积（tries 换回每 TTI）
     const product = [f.tries / 1000, f.okRate, f.rb, f.layers, f.eta, f.pdcch, f.decode].reduce((p, x) => (p == null || x == null ? null : p * x), 1);
     return { user: r.__g, tries, ok, matched: Number(r.__matched) || 0, factors: f, bitsPerTti: product };
@@ -124,8 +178,9 @@ export async function rateFactors(side, where) {
   const all = rows.map(build);
   const cell = all.find((x) => x.user === '__cell__') || null;
   const users = all.filter((x) => x.user !== '__cell__').sort((a, b) => b.tries - a.tries);
-  if (!e.ack) missing.push('ACK 字段（PDCCH 送达与译码成功按 100% 计）');
-  return { cell, users, span: S, bitsSource: e.bitsSource, ackSource: e.ackSource, rankBase: e.rankBase, missing };
+  if (!e.ack && !viaRetx) missing.push('ACK 字段（PDCCH 送达与译码成功按 100% 计）');
+  const blerSource = viaRetx ? '首次重传数 ÷ 初传数（tb0ReTransTimes = 1；DTX 引起的单独计）' : e.ackSource ? `逐行 ACK（${e.ackSource}）` : null;
+  return { cell, users, span: S, bitsSource: e.bitsSource, ackSource: e.ackSource, blerSource, rankBase: e.rankBase, missing };
 }
 
 /** 对数分摊：A→B 的总变化按因子拆开，返回 [{id, ratio, contrib(百分点)}]，各项之和 = 总变化。 */
@@ -174,32 +229,40 @@ export async function linkDiag(side, where) {
   const e = diagExprs(side.columns, { rankBase: await rankBase(side) });
   const has = e.has;
   const chain = MCS_CHAIN.filter(([c]) => has(c));
-  const target = has('714_iblerTarget') ? `avg(${n('714_iblerTarget')}) / ${IBLER_SCALE} * 100` : 'NULL';
+  const target = has('714_iblerTarget') ? `avg(${n('714_iblerTarget')}) FILTER (WHERE __i) / ${IBLER_SCALE} * 100` : 'NULL';
   const ollaCol = has('714_mcsOffset0_scaled') ? '714_mcsOffset0_scaled' : has('714_compOlla_scaled') ? '714_compOlla_scaled' : null;
   const sel = [
-    'count(*) AS __n',
-    ...chain.map(([c], i) => `avg(${n(c)}) AS __c${i}`),
-    ollaCol ? `avg(${n(ollaCol)}) AS __olla, quantile_cont(${n(ollaCol)}, 0.1) AS __olla10, min(${n(ollaCol)}) AS __ollaMin` : 'NULL AS __olla, NULL AS __olla10, NULL AS __ollaMin',
-    e.ack ? `(1 - avg(CASE WHEN ${e.ack} = 1 THEN 1.0 WHEN ${e.ack} = 0 THEN 0.0 END)) * 100 AS __bler, avg(CASE WHEN ${e.ack} IS NULL THEN NULL WHEN ${e.ack} NOT IN (0,1) THEN 1.0 ELSE 0.0 END) * 100 AS __dtx` : 'NULL AS __bler, NULL AS __dtx',
+    'count(*) FILTER (WHERE __i) AS __n',
+    ...chain.map(([c], i) => `avg(${n(c)}) FILTER (WHERE __i) AS __c${i}`),
+    ollaCol ? `avg(${n(ollaCol)}) FILTER (WHERE __i) AS __olla, quantile_cont(${n(ollaCol)}, 0.1) FILTER (WHERE __i) AS __olla10, min(${n(ollaCol)}) FILTER (WHERE __i) AS __ollaMin` : 'NULL AS __olla, NULL AS __olla10, NULL AS __ollaMin',
+    e.retx1 ? `count(*) FILTER (WHERE __r1 AND NOT __dtxr) * 100.0 / nullif(count(*) FILTER (WHERE __i) - count(*) FILTER (WHERE __r1 AND __dtxr), 0) AS __bler, count(*) FILTER (WHERE __r1 AND __dtxr) * 100.0 / nullif(count(*) FILTER (WHERE __i), 0) AS __dtx`
+      : e.ack ? `(1 - avg(CASE WHEN ${e.ack} = 1 THEN 1.0 WHEN ${e.ack} = 0 THEN 0.0 END) FILTER (WHERE __i)) * 100 AS __bler, avg(CASE WHEN ${e.ack} IS NULL THEN NULL WHEN ${e.ack} NOT IN (0,1) THEN 1.0 ELSE 0.0 END) FILTER (WHERE __i) * 100 AS __dtx` : 'NULL AS __bler, NULL AS __dtx',
     `${target} AS __target`,
-    has('suOrMuFlag') && has('tb0SchMcs') ? `avg(${n('tb0SchMcs')}) FILTER (WHERE upper(CAST(${qi('suOrMuFlag')} AS VARCHAR)) LIKE '%MU%') AS __muMcs, avg(${n('tb0SchMcs')}) FILTER (WHERE upper(CAST(${qi('suOrMuFlag')} AS VARCHAR)) NOT LIKE '%MU%') AS __suMcs, avg(CASE WHEN upper(CAST(${qi('suOrMuFlag')} AS VARCHAR)) LIKE '%MU%' THEN 100.0 ELSE 0 END) AS __muShare` : 'NULL AS __muMcs, NULL AS __suMcs, NULL AS __muShare',
-    has('bandCqiCw0') ? `avg(${n('bandCqiCw0')}) AS __cqi` : 'NULL AS __cqi',
+    has('suOrMuFlag') && has('tb0SchMcs') ? `avg(${n('tb0SchMcs')}) FILTER (WHERE __i AND upper(CAST(${qi('suOrMuFlag')} AS VARCHAR)) LIKE '%MU%') AS __muMcs, avg(${n('tb0SchMcs')}) FILTER (WHERE __i AND upper(CAST(${qi('suOrMuFlag')} AS VARCHAR)) NOT LIKE '%MU%') AS __suMcs, avg(CASE WHEN upper(CAST(${qi('suOrMuFlag')} AS VARCHAR)) LIKE '%MU%' THEN 100.0 ELSE 0 END) FILTER (WHERE __i) AS __muShare` : 'NULL AS __muMcs, NULL AS __suMcs, NULL AS __muShare',
+    has('bandCqiCw0') ? `avg(${n('bandCqiCw0')}) FILTER (WHERE __i) AS __cqi` : 'NULL AS __cqi',
   ];
   const rows = await query(`SELECT CASE WHEN grouping(__u) = 1 THEN '__cell__' ELSE __u END AS __g, ${sel.join(', ')}
-    FROM (SELECT *, ${e.user} AS __u FROM ${qi(side.table)} WHERE ${where} AND ${e.err} AND ${e.init}) GROUP BY GROUPING SETS ((__u), ())`);
+    FROM (SELECT *, ${e.user} AS __u, (${e.init}) AS __i, ${e.retx1 || 'FALSE'} AS __r1, ${e.dtxRow} AS __dtxr FROM ${qi(side.table)} WHERE ${where} AND ${e.err}) GROUP BY GROUPING SETS ((__u), ())`);
   const pack = (r) => ({
     user: r.__g, n: Number(r.__n),
     chain: chain.map(([c, label], i) => ({ column: c, label, value: r[`__c${i}`] })),
     olla: r.__olla, olla10: r.__olla10, ollaMin: r.__ollaMin, bler: r.__bler, dtx: r.__dtx, target: r.__target,
     muMcs: r.__muMcs, suMcs: r.__suMcs, muShare: r.__muShare, cqi: r.__cqi,
   });
-  const all = rows.map(pack);
-  return { cell: all.find((x) => x.user === '__cell__') || null, users: all.filter((x) => x.user !== '__cell__').sort((a, b) => b.n - a.n), chainColumns: chain.map(([c]) => c), ollaColumn: ollaCol };
+  const s714 = side.stats714;
+  const all = rows.map(pack).map((x) => {
+    const st = s714 ? (x.user === '__cell__' ? s714.cell : s714.byUser.get(x.user)) : null;
+    if (!st) return x;
+    // 714 独立统计优先：BLER / DTX 按反馈事件算，OLLA 按全部 714 记录算（不受 537/714 连接率影响）
+    return { ...x, bler: st.bler ?? x.bler, dtx: st.dtx ?? x.dtx, olla: st.olla ?? x.olla, olla10: st.olla10 ?? x.olla10, target: st.target ?? x.target, blerN: st.initFeedback };
+  });
+  const blerSource = s714?.cell ? s714.rule : e.retx1 ? '537：首次重传数 ÷ 初传数' : e.ack ? '逐行 ACK' : null;
+  return { cell: all.find((x) => x.user === '__cell__') || null, users: all.filter((x) => x.user !== '__cell__').sort((a, b) => b.n - a.n), chainColumns: chain.map(([c]) => c), ollaColumn: ollaCol, blerSource, unmapped714: s714?.unmappedShare ?? null };
 }
 
 /** 异常事件规则（阈值界面原样显示）。 */
 export const EVENT_RULES = {
-  nackRun: 4,      // 同一用户连续初传 NACK ≥ 4 次
+  nackRun: 4,      // 同一用户连续 ≥ 4 行都是 NACK 引起的重传（无重传次数字段时：连续 ack=0）
   dtxRun: 3,       // 连续 DTX ≥ 3 次
   failRun: 4,      // 连续调度失败 ≥ 4 次
   mcsDrop: 6,      // 最终 MCS 比该用户前 20 次调度的均值低 ≥ 6 阶
@@ -209,7 +272,7 @@ export const EVENT_RULES = {
 };
 
 export const EVENT_TYPES = {
-  nack: { label: '连续 NACK', color: '#dc2626', hint: '初传连续译码失败：信道突变、干扰突发或 MCS 过激' },
+  nack: { label: '连续 NACK', color: '#dc2626', hint: '连续多次因 NACK 重传：信道突变、干扰突发或 MCS 过激' },
   dtx: { label: '连续 DTX', color: '#6b7280', hint: 'UE 连续没收到 PDCCH：PDCCH 波束/聚合等级/覆盖问题' },
   fail: { label: '连续调度失败', color: '#9333ea', hint: 'schErrCode ≠ 0 成串：CCE 不足、资源冲突' },
   mcs: { label: 'MCS 骤降', color: '#ea580c', hint: '最终 MCS 较近期均值骤降并持续：CQI 下降、OLLA 回退或 MU 降阶' },
@@ -222,8 +285,14 @@ export async function detectEvents(side, where, R = EVENT_RULES, limit = 400) {
   const has = e.has;
   if (!e.tti) return { events: [], missing: ['tti'] };
   const flags = [];
-  if (e.ack) flags.push(['nack', `${e.init} AND ${e.err} AND ${e.ack} = 0`, R.nackRun]);
-  if (e.ack) flags.push(['dtx', `${e.err} AND ${e.ack} IS NOT NULL AND ${e.ack} NOT IN (0, 1)`, R.dtxRun]);
+  // 真实 537 的 ACK 字段是“触发本次调度的上一次反馈”：重传行带 0（NACK）或 2（DTX）。连续 NACK = 该用户连续多行都是 NACK 引起的重传
+  if (e.retx1) {
+    flags.push(['nack', `${e.err} AND coalesce(${n('tb0ReTransTimes')}, 0) >= 1 AND NOT ${e.dtxRow}`, R.nackRun]);
+    flags.push(['dtx', `${e.err} AND ${e.dtxRow}`, R.dtxRun]);
+  } else if (e.ack) {
+    flags.push(['nack', `${e.init} AND ${e.err} AND ${e.ack} = 0`, R.nackRun]);
+    flags.push(['dtx', `${e.err} AND ${e.ack} IS NOT NULL AND ${e.ack} NOT IN (0, 1)`, R.dtxRun]);
+  }
   if (has('schErrCode')) flags.push(['fail', `NOT ${e.err}`, R.failRun]);
   const mcsCol = has('tb0SchMcs') ? n('tb0SchMcs') : has('cw0SuMcs') ? n('cw0SuMcs') : null;
   const out = [];
@@ -277,7 +346,7 @@ export const LANES = [
   { id: 'mcs', label: 'MCS', columns: ['tb0SchMcs', 'estMcs0', 'cw0SuMcs'] },
   { id: 'rb', label: 'RB', columns: ['allocRbNum', 'esitimatedRb'] },
   { id: 'rank', label: '层数', columns: ['schRank'] },
-  { id: 'ack', label: 'ACK', columns: ['714_ack0'] },
+  { id: 'ack', label: 'ACK', columns: ['tb0AckState', '714_ack0'] },
   { id: 'olla', label: 'OLLA 阶', columns: ['714_mcsOffset0_scaled', '714_compOlla_scaled'] },
   { id: 'buf', label: '待发数据', columns: ['waitingData', 'usrschpdschDrbData'] },
 ];

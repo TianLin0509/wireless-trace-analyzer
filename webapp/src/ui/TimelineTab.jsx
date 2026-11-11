@@ -13,7 +13,7 @@ const LANES = [
   { id: 'mcs', label: 'MCS', items: [['tb0SchMcs', '最终 MCS', '#2563eb'], ['estMcs0', 'CQI 估计 MCS', '#94a3b8']] },
   { id: 'rb', label: 'RB', items: [['allocRbNum', '分配 RB', '#0e6b4e'], ['esitimatedRb', '估算需求 RB', '#a3a3a3']] },
   { id: 'rank', label: '层数', items: [['schRank', '调度层数', '#9333ea']] },
-  { id: 'ack', label: 'ACK', items: [['714_ack0', 'ack0', null]] },
+  { id: 'ack', label: '上次反馈', items: [['tb0AckState', '触发本次调度的反馈', null], ['714_ack0', '714 ack0', null]] },
   { id: 'olla', label: 'OLLA', items: [['714_mcsOffset0_scaled', 'OLLA 外环累计量（阶）', '#0891b2'], ['714_compOlla_scaled', '补偿 OLLA（阶）', '#67e8f9']] },
   { id: 'buf', label: '数据(字节)', items: [['waitingData', '待发数据', '#ea580c'], ['usrschpdschDrbData', '本次承载', '#fdba74']] },
 ];
@@ -84,9 +84,29 @@ export function TimelineTab() {
   );
 }
 
+/** 用户没被调度的时段不连线：相邻两点的 TTI 间隔超过常见间隔 10 倍（且 > 20）时插入断点。 */
+export function breakGaps(x, ys) {
+  const dif = [];
+  for (let i = 1; i < x.length; i++) dif.push(x[i] - x[i - 1]);
+  const sorted = [...dif].sort((a, b) => a - b);
+  const typical = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 1;
+  const lim = Math.max(20, typical * 10);
+  const X = [], Y = ys.map(() => []);
+  for (let i = 0; i < x.length; i++) {
+    if (i && x[i] - x[i - 1] > lim) { X.push(null); Y.forEach((y) => y.push(null)); }
+    X.push(x[i]); ys.forEach((y, k) => Y[k].push(y[i]));
+  }
+  return { x: X, ys: Y };
+}
+
 function buildPlot(d, events) {
   if (!d || !d.tti.length) return null;
-  const lanes = LANES.map((l) => ({ ...l, items: l.items.filter(([c]) => d.series[c]) })).filter((l) => l.items.length);
+  const lanes0 = LANES.map((l) => ({ ...l, items: l.items.filter(([c]) => d.series[c]) })).filter((l) => l.items.length);
+  // ACK 泳道：537 自带的 tb0AckState 有就只画它（714 只连上一半左右的行）
+  const lanes = lanes0.map((l) => (l.id === 'ack' && l.items.length > 1 ? { ...l, items: l.items.slice(0, 1) } : l));
+  const cols = [...new Set(lanes.flatMap((l) => l.items.map(([c]) => c)))];
+  const g = breakGaps(d.tti, cols.map((c) => d.series[c]));
+  d = { ...d, tti: g.x, series: Object.fromEntries(cols.map((c, k) => [c, g.ys[k]])) };
   if (!lanes.length) return null;
   const gap = 0.025, h = (1 - gap * (lanes.length - 1)) / lanes.length;
   const layout = { margin: { l: 70, r: 14, t: 26, b: 34 }, showlegend: true, legend: { orientation: 'h', x: 0, y: 1.04, font: { size: 10 } }, hovermode: 'x', xaxis: { gridcolor: GRID, title: { text: 'TTI', font: { size: 10 } }, anchor: `y${lanes.length}` }, shapes: [], annotations: [] };
@@ -106,7 +126,8 @@ function buildPlot(d, events) {
       }
     }
   });
-  const lo = d.tti[0], hi = d.tti[d.tti.length - 1];
+  const real = d.tti.filter((t) => t != null);
+  const lo = real[0], hi = real[real.length - 1];
   for (const e of events) {
     if (e.t1 < lo || e.t0 > hi) continue;
     layout.shapes.push({ type: 'rect', xref: 'x', yref: 'paper', x0: e.t0, x1: Math.max(e.t1, e.t0 + 1), y0: 0, y1: 1, fillcolor: EVENT_TYPES[e.type].color, opacity: 0.1, line: { width: 0 } });

@@ -14,6 +14,7 @@ import { DiagnosisNote } from './DiagnosisNote.jsx';
 import { ReportButton } from './ReportButton.jsx';
 import { ViewMenu } from './ViewMenu.jsx';
 import { RateTab } from './RateTab.jsx';
+import { ConcludeTab } from './ConcludeTab.jsx';
 import { LinkTab } from './LinkTab.jsx';
 import { EventsTab } from './EventsTab.jsx';
 import { TimelineTab } from './TimelineTab.jsx';
@@ -22,7 +23,7 @@ import { fmtSec, fmtBytes } from './fmt.js';
 export function Workspace() {
   const [railOpen, setRailOpen] = useState(() => window.innerWidth > 900);
   const single = S.mode.value === 'single';
-  const DIAG = [['rate', '速率拆解'], ['link', '链路诊断'], ['evt', '异常事件'], ['tl', '时间轴']];
+  const DIAG = [['dx', '诊断结论'], ['rate', '速率拆解'], ['link', '链路诊断'], ['evt', '异常事件'], ['tl', '时间轴']];
   const tabs = single ? [['sum', '概览'], ...DIAG, ['usr', '用户'], ['tbl', '明细'], ['cht', '图表'], ['qa', '数据质量']] : [['sum', '结论'], ...DIAG, ['tbl', '明细'], ['cht', '图表'], ['qa', '数据质量']];
   const tab = tabs.some(([k]) => k === S.tab.value) ? S.tab.value : 'sum';
   const ready = S.ready.value;
@@ -43,6 +44,7 @@ export function Workspace() {
             <PartialBanner />
             <DiagnosisNote />
             {tab === 'sum' && (single ? (ready ? <SingleOverview /> : <Waiting what="概览" />) : <SummaryTab />)}
+            {tab === 'dx' && (ready ? <ConcludeTab /> : <Waiting what="诊断结论" />)}
             {tab === 'rate' && (ready ? <RateTab /> : <Waiting what="速率拆解" />)}
             {tab === 'link' && (ready ? <LinkTab /> : <Waiting what="链路诊断" />)}
             {tab === 'evt' && (ready ? <EventsTab /> : <Waiting what="异常事件" />)}

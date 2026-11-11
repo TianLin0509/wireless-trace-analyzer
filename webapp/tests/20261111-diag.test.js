@@ -52,3 +52,35 @@ describe('事件矩阵', () => {
     expect(m[1].user).toBe('a');
   });
 });
+
+import { concludeUsers, concludeAb } from '../src/engine/conclude.js';
+
+describe('诊断结论：初判规则', () => {
+  const mk = (user, o = {}) => ({ user, tries: 1000, factors: { tries: 500, okRate: 0.98, rb: 60, layers: 1.6, eta: 500, pdcch: 0.99, decode: 0.9, ...o } });
+  const base = ['a', 'b', 'c', 'd'].map((u) => mk(u));
+  it('数据受限过半 → 首要问题是业务量不足', () => {
+    const lim = { users: new Map([['x', { data: 90, fail: 0, rb: 5 }]]) };
+    const r = concludeUsers({ rate: { users: [...base, mk('x', { rb: 5 })] }, lim, linkFlagsByUser: new Map(), events: [] });
+    expect(r.find((u) => u.user === 'x').causes[0].id).toBe('data');
+  });
+  it('OLLA 深负标签 → CQI 偏乐观；正常用户无初判', () => {
+    const r = concludeUsers({ rate: { users: [...base, mk('y', { eta: 300 })] }, lim: null, linkFlagsByUser: new Map([['y', [['OLLA 深负', '']]]]), events: [] });
+    const y = r.find((u) => u.user === 'y');
+    expect(y.causes.map((c) => c.id)).toContain('optimistic');
+    expect(y.causes.map((c) => c.id)).not.toContain('channel'); // OLLA 已解释，不再重复判“信道差”
+    expect(r.find((u) => u.user === 'a').causes).toEqual([]);
+    expect(r[0].user).toBe('y'); // 有问题的排前面
+  });
+  it('连续 DTX 事件 ≥ 3 → PDCCH 漏检', () => {
+    const ev = [1, 2, 3].map(() => ({ user: 'z', type: 'dtx' }));
+    const r = concludeUsers({ rate: { users: [...base, mk('z')] }, lim: null, linkFlagsByUser: new Map(), events: ev });
+    expect(r.find((u) => u.user === 'z').causes.map((c) => c.id)).toContain('pdcch');
+  });
+  it('A/B：小区一句话给出拖累与抵消', () => {
+    const A = { cell: mk('c'), users: [mk('u')] }, B = { cell: mk('c', { okRate: 0.9, rb: 65 }), users: [mk('u', { eta: 400 })] };
+    const r = concludeAb({ cell: A.cell.factors && { factors: A.cell.factors }, users: A.users }, { cell: { factors: B.cell.factors }, users: B.users }, null, null);
+    expect(r.lines[0]).toMatch(/拖累：调度成功率/);
+    expect(r.lines[0]).toMatch(/抵消：RB\/次/);
+    expect(r.users[0].main.id).toBe('eta');
+  });
+});

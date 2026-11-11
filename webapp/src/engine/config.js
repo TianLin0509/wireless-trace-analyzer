@@ -16,7 +16,7 @@ export const DIAG_537_COLUMNS = [
   'schErrCode', 'userNum', 'schSuccUserNum', 'pairNum', 'esitimatedRb', 'waitingData', 'tb0TbByteLength', 'tb1TbByteLength',
   'tb0ReTransTimes', 'tb0AckState', 'harqProcNo', 'mcsTable', 'actualRePerRb', 'estMcs0', 'cw0Mcs', 'initAdjMcs0', 'powerBackMcs0', 'rateMtcMcs0', 'reduceMcs0', 'suRank',
 ];
-export const DIAG_714_COLUMNS = ['iblerTarget', 'ack1', 'harqNo', 'wbCqi4Bit0Type1', 'mcsBfCwFlter0', 'mcsCwRankFlter0', 'currAdjStep'];
+export const DIAG_714_COLUMNS = ['iblerTarget', 'trcItem', 'retansNum0', 'ack1', 'harqNo', 'wbCqi4Bit0Type1', 'mcsBfCwFlter0', 'mcsCwRankFlter0', 'currAdjStep'];
 
 export const DEFAULT_CHART_METRICS = ['cw0SuMcs', 'tb0SchMcs', 'schRank', 'usrschpdschDrbData'];
 

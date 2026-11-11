@@ -4,7 +4,7 @@ import { query } from './db.js';
 import { qi } from './sql.js';
 import { metricSummary, categoryCounts } from './stats.js';
 import { TRUNCATED_LIMIT } from './config.js';
-import { rankBase } from './diagnose.js';
+import { rankBase, initCond } from './diagnose.js';
 
 const v = (c) => `TRY_CAST(${qi(c)} AS DOUBLE)`;
 /** OLLA 指标优先用外环累计量 mcsOffset[0]（公司样例注释：外环累计量/1024000，单位 MCS 阶），没有再用 compOlla。 */
@@ -13,8 +13,8 @@ const SPARK = Array.from({ length: 41 }, (_, i) => i / 40);
 
 /** 概览卡片定义：mean = 均值类（带分布），share = 占比类，cats = 类别构成。 */
 export const OVERVIEW_CARDS = [
-  { id: 'mcs', label: 'MCS 均值（cw0SuMcs）', column: 'cw0SuMcs', kind: 'mean', digits: 2 },
-  { id: 'tb0', label: 'tb0SchMcs 均值', column: 'tb0SchMcs', kind: 'mean', digits: 2 },
+  { id: 'mcs', label: 'MCS 均值（cw0SuMcs，初传）', column: 'cw0SuMcs', kind: 'mean', digits: 2, initOnly: true },
+  { id: 'tb0', label: '最终调度 MCS 均值（tb0SchMcs，初传）', column: 'tb0SchMcs', kind: 'mean', digits: 2, initOnly: true },
   { id: 'bler', label: 'BLER（剔除 DTX）', column: '714_ack0', kind: 'bler', unit: '%', digits: 2 },
   { id: 'rank2', label: '多流占比（≥ 2 层）', column: 'schRank', kind: 'share', test: (x, base = 0) => `${x} + ${base} >= 2`, unit: '%', digits: 1 },
   { id: 'trunc', label: `截包占比（0 < data < ${TRUNCATED_LIMIT}）`, column: 'usrschpdschDrbData', kind: 'share', test: (x) => `${x} > 0 AND ${x} < ${TRUNCATED_LIMIT}`, unit: '%', digits: 2 },
@@ -41,7 +41,7 @@ export async function cellOverview(side, where, isStale) {
     if (!has(def.column)) continue;
     const x = v(def.column);
     if (def.kind === 'mean') {
-      const s = await metricSummary(side, def.column, where, SPARK);
+      const s = await metricSummary(side, def.column, def.initOnly ? `${where} AND ${initCond(side.columns)}` : where, SPARK);
       cards.push({ ...def, test: undefined, value: s.mean, n: s.count, p50: s.p50, p90: s.p90, min: s.min, max: s.max, cdf: s.cdf });
     } else if (def.kind === 'bler') {
       const [r] = await query(`SELECT count(*) FILTER (WHERE ${x} IN (0,1)) AS __valid, count(*) FILTER (WHERE ${x} IS NOT NULL AND ${x} NOT IN (0,1)) AS __dtx,

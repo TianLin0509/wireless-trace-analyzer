@@ -80,7 +80,7 @@ export function LinkTab() {
       {data.error && <div class="banner warn">计算失败：{String(data.error.message || data.error)}</div>}
       {d && <div class="diag-top">
         <div class="chartcard" style="margin:0">{chart ? <Plot data={chart.data} layout={chart.layout} height={290} /> : <div class="empty">537 里没有 MCS 调整链字段（estMcs0 / initAdjMcs0 / … / tb0SchMcs）。</div>}
-          <div class="faint" style="font-size:11px">虚线：{users.length ? '左侧所选用户' : '体检有异常的用户（最多 4 个）'}。链路字段顺序依据字段名与 714 注释推断，待官方文档确认。</div></div>
+          <div class="faint" style="font-size:11px" title={cur?.blerSource || ''}>虚线：{users.length ? '左侧所选用户' : '有判读结论的用户（最多 4 个）'}。BLER/DTX/OLLA 口径：{cur?.blerSource ? (cur.blerSource.startsWith('714') ? '714 原表独立统计（悬停看定义）' : cur.blerSource) : '—'}{cur?.unmapped714 > 5 ? `；${fmt(cur.unmapped714, 1)}% 的 714 记录找不到对应用户` : ''}</div></div>
         <div class="diag-side">
           {['A', 'B'].filter((k) => d[k]?.cell).map((k) => { const x = d[k].cell; return (
             <div class="kcard"><div class="nm"><span>{single ? '小区' : <span class={k}>方案 {k}</span>}</span><span class="faint">初传 {fmtInt(x.n)} 次</span></div>

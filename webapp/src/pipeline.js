@@ -4,6 +4,7 @@ import { batch as signalBatch } from '@preact/signals';
 import { ingestT396, ingestTable, dropTable } from './engine/ingest.js';
 import { sniffFile, SNIFF_BYTES } from './engine/csvsniff.js';
 import { mergeSide } from './engine/merge.js';
+import { stats714 } from './engine/diagnose.js';
 import { DIAG_537_COLUMNS, DIAG_714_COLUMNS } from './engine/config.js';
 import { compareT396 } from './engine/t396.js';
 import { getFile, getHead, isHelperFile } from './engine/fs.js';
@@ -211,6 +212,8 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
       if (t['537']) {
         try {
           merged[side] = await timed(`merge${side}`, 0, () => mergeSide(side, t['537'], t['714'] || null, t['714'] ? null : fallback714(side === 'A' ? 'B' : 'A')));
+          // 原表释放前，在 714 原表上做独立统计（初传 BLER / DTX / OLLA），不受 537/714 逐行连接率影响
+          if (merged[side] && t['714']) merged[side].stats714 = await stats714(t['537'], t['714']).catch(() => null);
         } catch (err) {
           errors.push(`合并方案 ${side}：${err.message || err}`);
         }
