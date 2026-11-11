@@ -39,6 +39,7 @@ export function Workspace() {
               <button class={tab === k ? 'on' : ''} onClick={() => (S.tab.value = k)}>{label}</button>
             ))}
             <span class="sp" />
+            <UserKeyBadge />
             <QualityBadge />
           </div>
           <div class="content" id="content">
@@ -80,6 +81,13 @@ function PartialBanner() {
       <button class="btn small" onClick={() => (S.tab.value = 'qa')}>查看原因</button>
     </div>
   );
+}
+
+/** 用户键说明：外场数据里 ambr / dlAmbr 是签约速率、不是用户标签时，自动改用 usrId / susrId；在页签栏给一个小标记，悬停看原因。 */
+function UserKeyBadge() {
+  const notes = [...Object.values(S.sides.value).filter(Boolean).map((x) => x.userNote), ...Object.values(S.sources.value).map((x) => x.userNote)].filter(Boolean);
+  if (!notes.length) return null;
+  return <span class="tag chg" style="margin-right:6px;cursor:help" title={[...new Set(notes)].join('；')}>用户按 usrId 区分</span>;
 }
 
 function QualityBadge() {

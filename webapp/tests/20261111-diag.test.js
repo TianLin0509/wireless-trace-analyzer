@@ -158,3 +158,10 @@ describe('控制信道判读（650/941）', () => {
     expect(c[0].evidence).toContain('聚合级别 16');
   });
 });
+
+describe('控制信道：小样本不判', () => {
+  it('2 次失败 / 83 次申请（2.4%）不标 CCE 失败', () => {
+    const us = [{ dlN: 5000, dlFail: 0.2 }, { dlN: 5000, dlFail: 0.3 }, { dlN: 83, dlFail: 2.41 }];
+    expect(ctrlFlags(us[2], ctrlRef(us))).toEqual([]);
+  });
+});

@@ -63,7 +63,7 @@ export function CtrlTab() {
         </div>
         <div style="padding:0 10px 8px">{pg.bar}</div>
       </div>
-      <div class="muted foot-note">判读规则：下行 CCE 申请失败 &gt; {CTRL_RULES.cceWarn}% 且（&gt; {CTRL_RULES.cceBad}% 或 ≥ 用户中位 {CTRL_RULES.agg16Rel} 倍）→ 并进“调度不足”（全小区都高时归为共性问题）；聚合 16 占比 ≥ {CTRL_RULES.agg16Min}% 且 ≥ 用户中位 {CTRL_RULES.agg16Rel} 倍 → 并进“PDCCH 漏检”（覆盖/干扰差，CCE 消耗大）。申请或记录少于 {CTRL_RULES.minN} 条的用户不判。连续 DTX 记录里聚合 16 明显多于全体，说明 DTX 后系统在抬聚合级别补救。</div>
+      <div class="muted foot-note">判读规则：下行 CCE 申请失败 &gt; {CTRL_RULES.cceWarn}% 且（&gt; {CTRL_RULES.cceBad}% 或 ≥ 用户中位 {CTRL_RULES.agg16Rel} 倍）→ 并进“调度不足”（全小区都高时归为共性问题）；聚合 16 占比 ≥ {CTRL_RULES.agg16Min}% 且 ≥ 用户中位 {CTRL_RULES.agg16Rel} 倍 → 并进“PDCCH 漏检”（覆盖/干扰差，CCE 消耗大）。申请或记录少于 {CTRL_RULES.minN} 条、或 CCE 失败少于 {CTRL_RULES.minFail} 次的用户不判。连续 DTX 记录里聚合 16 明显多于全体，说明 DTX 后系统在抬聚合级别补救。</div>
     </div>
   );
 }

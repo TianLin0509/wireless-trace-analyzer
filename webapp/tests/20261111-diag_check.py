@@ -114,6 +114,7 @@ with sync_playwright() as p:
         pg.get_by_role("button", name="导出报告").click()
     rep = open(dl.value.path(), encoding="utf-8").read()
     checks["单小区导出报告含诊断结论（业务量不足）"] = "<h2>诊断结论</h2>" in rep and "业务量不足" in rep
+    checks["单小区导出报告含控制信道（5006 聚合级别高）"] = "控制信道（T650 / T941）" in rep and "聚合级别高" in rep
     # ---------- A/B：场景 A vs 场景 B ----------
     pg.goto(url + ("&" if "?" in url else "?") + "picker=input&debug")
     pg.wait_for_timeout(1500)

@@ -8,7 +8,7 @@ export const CTRL_650_COLUMNS = ['rnti', 'usrId', 'schTypeBitmap', 'result', 'tr
 export const CTRL_941_COLUMNS = ['rnti', 'suAggLvl', 'continuousDlDtxNum', 'widebandCqi0', 'suSinr', 'sinrPdschOlla', 'rptTti'];
 
 // 判读门限（界面原样显示）。CCE 失败率门限取常用体检经验值：> 1% 报警、> 5% 严重
-export const CTRL_RULES = { cceWarn: 1, cceBad: 5, agg16Rel: 2, agg16Min: 30, minN: 50 };
+export const CTRL_RULES = { cceWarn: 1, cceBad: 5, agg16Rel: 2, agg16Min: 30, minN: 50, minFail: 5 };
 
 const n = (c) => qi(c);
 // 系统消息（SIB/寻呼/RAR）的 RNTI 不算用户：≥ 65534 或 < 100
@@ -91,7 +91,8 @@ export function ctrlFlags(u, ref, R = CTRL_RULES) {
   const out = [];
   if (!u) return out;
   // 绝对门限（> 1%）+ 相对用户中位 2 倍；全小区都高时（> 5%）每个用户都标，汇总成小区共性
-  if (u.dlFail != null && u.dlN >= R.minN && u.dlFail > R.cceWarn && (u.dlFail > R.cceBad || !ref?.dlFail || u.dlFail >= R.agg16Rel * ref.dlFail)) out.push([u.dlFail > R.cceBad ? 'CCE 失败严重' : 'CCE 失败', `下行 PDCCH CCE 申请失败 ${u.dlFail.toFixed(1)}%（${u.dlN} 次申请${u.topCode ? `，主要失败码 ${u.topCode}` : ''}）`]);
+  // 失败次数也要够（真实数据里 2 次失败 / 83 次申请曾被误标）
+  if (u.dlFail != null && u.dlN >= R.minN && (u.dlFail * u.dlN) / 100 >= R.minFail - 1e-9 && u.dlFail > R.cceWarn && (u.dlFail > R.cceBad || !ref?.dlFail || u.dlFail >= R.agg16Rel * ref.dlFail)) out.push([u.dlFail > R.cceBad ? 'CCE 失败严重' : 'CCE 失败', `下行 PDCCH CCE 申请失败 ${u.dlFail.toFixed(1)}%（${u.dlN} 次申请${u.topCode ? `，主要失败码 ${u.topCode}` : ''}）`]);
   if (u.agg16 != null && u.n941 >= R.minN && u.agg16 >= R.agg16Min && (!ref?.agg16 || u.agg16 >= R.agg16Rel * ref.agg16)) out.push(['聚合级别高', `PDCCH 聚合级别 16 占 ${u.agg16.toFixed(0)}%（用户中位 ${ref?.agg16 != null ? ref.agg16.toFixed(0) : '—'}%）：PDCCH 覆盖或干扰差，CCE 消耗大`]);
   return out;
 }

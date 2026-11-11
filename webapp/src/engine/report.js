@@ -11,6 +11,7 @@ import { describeFilter } from '../ui/filters.js';
 import { loadPlotly } from '../ui/Plot.jsx';
 import { sideEvidence } from '../ui/ConcludeTab.jsx';
 import { concludeAb, commonCauses } from './conclude.js';
+import { ctrlFlags, ctrlRef } from './ctrl.js';
 
 export const escapeHtml = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const number = (x, digits = 2) => x == null || !Number.isFinite(Number(x)) ? '—' : Number(x).toLocaleString('zh-CN', { maximumFractionDigits: digits });
@@ -47,6 +48,15 @@ function diagnosisHtml(d, single) {
   return `<h2>诊断结论</h2>${note}<div class="notice">${escapeHtml(ab.lines.join('；') || '样本不足，无法拆解')}</div>${table(['用户', '拆解变化', '主因', '主因贡献', 'B/A 比值'], ab.users.map((u) => [u.user, number(u.total, 1) + '%', u.main.label, number(u.main.contrib, 1) + ' 点', number(u.main.ratio, 3)]))}`;
 }
 
+/** 控制信道段（有 650/941 时）：每侧小区一行 + 有判读的用户。 */
+function ctrlHtml(c) {
+  if (!c || !Object.values(c).some(Boolean)) return '';
+  const pct = (v, d = 1) => (v == null ? '—' : number(v, d) + '%');
+  const rows = Object.entries(c).filter(([, x]) => x).map(([k, x]) => [k, pct(x.cell.dlFail, 2), pct(x.cell.ulFail, 2), number(x.cell.agg, 1), pct(x.cell.agg16, 0), pct(x.cell.dtxShare, 2), pct(x.cell.agg16Dtx, 0)]);
+  const flagged = Object.entries(c).filter(([, x]) => x).flatMap(([k, x]) => { const ref = ctrlRef(x.users); return x.users.map((u) => [k, u, ctrlFlags(u, ref)]).filter(([, , f]) => f.length).map(([k2, u, f]) => [k2, u.user, f.map((y) => y[0]).join('、'), f.map((y) => y[1]).join('；')]); });
+  return `<h2>控制信道（T650 / T941）</h2><p class="muted">650/941 原表按用户汇总（按 rnti 挂到 537 用户，剔除系统消息，只看 CCE 申请记录）。</p>${table(['方案', '下行 CCE 申请失败', '上行 CCE 申请失败', 'PDCCH 聚合级别', '聚合 16 占比', '连续 DTX 记录', '其中聚合 16'], rows)}${flagged.length ? table(['方案', '用户', '判读', '依据'], flagged) : '<p class="muted">没有用户触发控制信道判读。</p>'}`;
+}
+
 export function buildReportHtml(m) {
   const single = m.mode === 'single';
   const title = single ? '无线 Trace · 单小区分析报告' : '无线 Trace · A/B 分析报告';
@@ -66,6 +76,7 @@ export function buildReportHtml(m) {
   <h2>关键指标与分布</h2><p class="muted">CDF 为累计分布；A / 本小区为蓝色，B 为橙色。占比条统一以 100% 为满格。</p><div class="grid">${m.cards.map(cardHtml).join('')}</div>
   ${single ? `<h2>单小区体检</h2><p>已检查：${escapeHtml(m.coverage?.available.join('、') || '无')}。未检查：${escapeHtml(m.coverage?.missing.join('、') || '无')}。样本不足的规则不代表通过。</p>${m.findings.length ? table(['线索', '用户', '规则'], m.findings.map((x) => [x.title, x.users.join('、'), x.rule])) : '<p>当前规则未检出明显异常；这不等于小区健康或所有指标通过。</p>'}<h2>逐用户指标</h2>${table(['用户', 'Rate（T396 全批次）', 'TTI 占比 %', '调度行数', '有效 ACK', 'MCS', 'BLER %', '截包 %', 'OLLA（MCS 阶）'], m.userMetrics.map((u) => [u.user, number(u.rate), number(u.share, 1), number(u.rows, 0), number(u.valid, 0), number(u.mcs), number(u.bler), number(u.trunc), number(u.olla)]))}` : `<h2>全批次速率变化贡献</h2><p>速率变化与占比变化采用两侧中点对称分摊；总贡献相加等于小区相对变化。新增或消失用户归入占比变化。贡献表覆盖全部用户，不受当前列筛选或搜索影响，属于数学分解，不代表因果。仅一侧有数据或 A 小区速率为零时显示“—”。</p>${table(['用户', 'Rate A', 'Rate B', '占比 A', '占比 B', '速率变化贡献', '占比变化贡献', '总贡献'], contributions)}`}
   ${diagnosisHtml(m.diagnosis, single)}
+  ${ctrlHtml(m.ctrl)}
   <h2>导出时已显示的图表</h2>${chartImages || '<p class="muted">导出时未显示已生成的图表；上方已包含关键指标分布图。若需时序图，在图表页完成绘图后再次导出。</p>'}${m.chartNotes.length ? `<div class="notice warn">${m.chartNotes.map(escapeHtml).join('<br>')}</div>` : ''}
   <h2>数据来源与质量</h2>${table(['侧', '跟踪', '实际读取路径', '读取行数', '跳过坏行', '未使用后续分片'], sources)}<details><summary>逐文件质量详情</summary>${table(['文件', '质量记录'], m.sources.map((s) => [s.path, JSON.stringify(s.quality || {})]))}</details><h2>读取文件与候选分片</h2>${table(['侧', '跟踪', '本次选中', '扫描到的所有候选文件'], choices)}
   ${m.errors.length ? `<div class="notice warn"><b>未完成项与错误</b><ul>${m.errors.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>` : ''}<p class="muted">本报告保留来源路径与统计结果，请按实际接收对象决定是否分享。它不包含原始 CSV，也不执行脚本或网络请求。</p></main></body></html>`;
@@ -126,6 +137,7 @@ export async function collectReport() {
   } catch (err) {
     model.chartNotes.push(`诊断结论未能导出：${err.message || err}。其余结果已保留。`);
   }
+  model.ctrl = { A: sides.A?.statsCtrl || null, ...(single ? {} : { B: sides.B?.statsCtrl || null }) };
   if (stale()) throw new Error('导出期间分析范围发生变化，本次未保存报告。请等统计更新完后再点导出。');
   return model;
 }

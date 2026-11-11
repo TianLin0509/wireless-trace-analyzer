@@ -1,7 +1,7 @@
 // 一键流水线：T396 先出结果 → 读取 537/714（只读需要的列）→ 自动合并。全程后台进行，界面随时可看已就绪的部分。
 // 任务串行：新任务先让旧任务停下并等它真正结束，再清理旧表，避免两个任务交叉改写同名表和界面状态。
 import { batch as signalBatch } from '@preact/signals';
-import { ingestT396, ingestTable, ingestAux, dropTable } from './engine/ingest.js';
+import { ingestT396, ingestTable, ingestAux, dropTable, fixUserKey } from './engine/ingest.js';
 import { sniffFile, SNIFF_BYTES } from './engine/csvsniff.js';
 import { mergeSide } from './engine/merge.js';
 import { stats714 } from './engine/diagnose.js';
@@ -14,7 +14,7 @@ import { addRecent } from './persist.js';
 import { batchLabel } from './engine/scan.js';
 import * as S from './store.js';
 
-const KEYS_537 = ['tti', 'ambr', 'crnti', 'HH:MM:SS', 'frm', 'slotNo', 'slotNum'];
+const KEYS_537 = ['tti', 'ambr', 'usrId', 'crnti', 'HH:MM:SS', 'frm', 'slotNo', 'slotNum'];
 const KEYS_714 = ['crnti', 'HH:MM:SS', 'frm', 'slotNum', 'slotNo'];
 const SRC_TABLES = ['src_A537', 'src_A714', 'src_B537', 'src_B714', 'src_A650', 'src_A941', 'src_B650', 'src_B941'];
 const AUX = { 650: { label: 'T650 CCE', columns: CTRL_650_COLUMNS }, 941: { label: 'T941 聚合级别', columns: CTRL_941_COLUMNS } };
@@ -161,7 +161,7 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
           const res = await timed(key, file.size / 4, () => ingestT396(key, file));
           await unregisterFile(key);
           agg[side] = res.aggregate;
-          record(key, { key, trace: '396', side, name: f.name, relPath: f.relPath, size: file.size, rows: res.rows, users: res.aggregate.length, quality: res.quality });
+          record(key, { key, trace: '396', side, name: f.name, relPath: f.relPath, size: file.size, rows: res.rows, users: res.aggregate.length, quality: res.quality, userNote: res.userNote });
         } catch (err) {
           errors.push(`${key}：${err.message || err}`);
         }
@@ -207,6 +207,7 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
           const file = await fetchFile(key, f);
           const res = await timed(key, file.size, () => ingestTable(key, file, id, wantedFor(id), sniff));
           t[id] = res;
+          if (id === '537') res.userNote = await fixUserKey(res).catch(() => null);
           record(key, { key, trace: id, side, name: f.name, relPath: f.relPath, size: file.size, rows: res.rows, columns: res.columns, selected: res.selected, numericColumns: res.numericColumns, quality: res.quality, ignored: (sel[side]?.traces[id]?.candidates.length || 1) - 1 });
         } catch (err) {
           errors.push(`${key}：${err.message || err}`);
@@ -217,6 +218,7 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
         try {
           merged[side] = await timed(`merge${side}`, 0, () => mergeSide(side, t['537'], t['714'] || null, t['714'] ? null : fallback714(side === 'A' ? 'B' : 'A')));
           // 原表释放前，在 714 原表上做独立统计（初传 BLER / DTX / OLLA），不受 537/714 逐行连接率影响
+          if (merged[side]) merged[side].userNote = t['537'].userNote || null;
           if (merged[side] && t['714']) merged[side].stats714 = await stats714(t['537'], t['714']).catch(() => null);
           // 控制信道（650/941）：读入后按用户汇总，立即释放
           const aux = {};
