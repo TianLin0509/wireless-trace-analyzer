@@ -283,3 +283,21 @@ code { font-family: var(--mono); font-size: 0.92em; background: #f3f4f6; padding
   .errbox { max-width: calc(100vw - 24px); right: 12px; }
 }
 @media (max-width: 420px) { .kgrid { grid-template-columns: 1fr; } .modetabs button { padding: 10px; } }
+
+/* 诊断页签（v1.6.0） */
+.diag .headline .muted { max-width: 980px; }
+.diag-top { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+.diag-top.evt { grid-template-columns: minmax(0, 1fr) 280px; }
+.diag-side { display: flex; flex-direction: column; gap: 8px; }
+.diag-side .kcard { cursor: default; padding: 9px 12px; }
+.diag-side .kcard.on, .kcard.on { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand) inset; }
+.diag-top.evt .diag-side .kcard { cursor: pointer; padding: 7px 12px; }
+.link-kv { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 2px 8px; font-size: 12px; margin-top: 4px; }
+.link-kv span { color: var(--soft); }
+.factor-cards { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.factor-cards .kcard { cursor: default; padding: 9px 12px; }
+.t tr.click td, .t td.click { cursor: pointer; }
+.t tr.on td, .t td.on { background: #eef6f2; }
+.foot-note { font-size: 12px; margin-top: 8px; line-height: 1.6; }
+.diag .section .t td, .diag .section .t th { padding: 5px 8px; }
+@media (max-width: 1100px) { .diag-top, .diag-top.evt { grid-template-columns: 1fr; } .factor-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } }

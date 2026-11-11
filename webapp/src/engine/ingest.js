@@ -1,6 +1,6 @@
 // 读取：T396 直接在 SQL 里聚合；T537/T714 只读选中的列（加连接键），坏行记入质量报告而不是静默丢弃。
 import { query, exec, scalar, registerFile } from './db.js';
-import { qi, qs, numExpr, textExpr, normUserExpr, normCrntiExpr } from './sql.js';
+import { qi, qs, numExpr, textExpr, normUserExpr, normCrntiExpr, toDouble } from './sql.js';
 import { sniffFile } from './csvsniff.js';
 import { T396_REQUIRED, MAX_REJECT_SAMPLES } from './config.js';
 
@@ -110,7 +110,7 @@ export async function ingestTable(key, file, traceId, wantedColumns, sniffed) {
   const numSelected = selected.filter((c) => numeric.has(c));
   // 数值列里出现的非数字文本（如 N/A）会按空值处理：逐行计数，写进质量报告，不悄悄丢掉
   const badExpr = numSelected.length
-    ? numSelected.map((c) => `(CASE WHEN NULLIF(TRIM(${qi(c)}), '') IS NOT NULL AND LOWER(TRIM(${qi(c)})) <> 'nan' AND TRY_CAST(TRIM(${qi(c)}) AS DOUBLE) IS NULL THEN 1 ELSE 0 END)`).join(' + ')
+    ? numSelected.map((c) => `(CASE WHEN NULLIF(TRIM(${qi(c)}), '') IS NOT NULL AND LOWER(TRIM(${qi(c)})) <> 'nan' AND ${toDouble(`TRIM(${qi(c)})`)} IS NULL THEN 1 ELSE 0 END)`).join(' + ')
     : '0';
   const parts = [
     'row_number() OVER () AS __source_row',
@@ -133,7 +133,7 @@ export async function ingestTable(key, file, traceId, wantedColumns, sniffed) {
     const badColumns = [];
     // 文件开头一段全空、无法判断类型的列，用全量数据复核：92% 以上可转数字就改成数值列（与旧版阈值一致）
     for (const c of selected.filter((x) => sniff.undecidedColumns?.includes(x))) {
-      const [r] = await query(`SELECT count(${qi(c)}) AS n, count(TRY_CAST(${qi(c)} AS DOUBLE)) AS k FROM ${qi(table)} WHERE lower(${qi(c)}) <> 'nan'`);
+      const [r] = await query(`SELECT count(${qi(c)}) AS n, count(${toDouble(qi(c))}) AS k FROM ${qi(table)} WHERE lower(${qi(c)}) <> 'nan'`);
       if (r.n && r.k / r.n >= 0.92) {
         await exec(`ALTER TABLE ${qi(table)} ALTER ${qi(c)} TYPE DOUBLE USING ${numExpr(qi(c))}`);
         numeric.add(c);

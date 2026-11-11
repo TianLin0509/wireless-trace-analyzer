@@ -18,7 +18,7 @@ const COLS = [
   { k: 'bler', label: 'BLER %', d: 2, worse: (x, c) => c.bler != null && x >= Math.max(10, c.bler * 2) },
   { k: 'dtx', label: 'DTX 行', int: true },
   { k: 'trunc', label: '截包 %', d: 2, worse: (x, c) => c.trunc != null && x >= Math.max(5, c.trunc * 2) },
-  { k: 'olla', label: 'OLLA dB', d: 2, worse: (x, c) => c.olla != null && x <= c.olla - 2 },
+  { k: 'olla', label: 'OLLA 阶', d: 2, worse: (x, c) => c.olla != null && x <= c.olla - 2 },
   { k: 'rb', label: 'RB 均值', d: 1 },
   { k: 'cqi', label: 'CQI 均值', d: 2 },
 ];

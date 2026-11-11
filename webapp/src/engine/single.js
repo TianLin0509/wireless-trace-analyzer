@@ -6,6 +6,8 @@ import { metricSummary, categoryCounts } from './stats.js';
 import { TRUNCATED_LIMIT } from './config.js';
 
 const v = (c) => `TRY_CAST(${qi(c)} AS DOUBLE)`;
+/** OLLA 指标优先用外环累计量 mcsOffset[0]（公司样例注释：外环累计量/1024000，单位 MCS 阶），没有再用 compOlla。 */
+export const ollaColumn = (columns) => (columns.includes('714_mcsOffset0_scaled') ? '714_mcsOffset0_scaled' : columns.includes('714_compOlla_scaled') ? '714_compOlla_scaled' : null);
 const SPARK = Array.from({ length: 41 }, (_, i) => i / 40);
 
 /** 概览卡片定义：mean = 均值类（带分布），share = 占比类，cats = 类别构成。 */
@@ -17,8 +19,8 @@ export const OVERVIEW_CARDS = [
   { id: 'trunc', label: `截包占比（0 < data < ${TRUNCATED_LIMIT}）`, column: 'usrschpdschDrbData', kind: 'share', test: (x) => `${x} > 0 AND ${x} < ${TRUNCATED_LIMIT}`, unit: '%', digits: 2 },
   { id: 'rb', label: 'RB 数均值（allocRbNum）', column: 'allocRbNum', kind: 'mean', digits: 1 },
   { id: 'cqi', label: 'CQI 均值（bandCqiCw0）', column: 'bandCqiCw0', kind: 'mean', digits: 2 },
-  { id: 'olla', label: 'compOlla 均值（÷1024000）', column: '714_compOlla_scaled', kind: 'mean', unit: 'dB', digits: 2 },
-  { id: 'offset', label: 'mcsOffset 均值（÷1024000）', column: '714_mcsOffset0_scaled', kind: 'mean', digits: 2 },
+  { id: 'olla', label: 'OLLA 外环累计量（mcsOffset÷1024000）', column: '714_mcsOffset0_scaled', kind: 'mean', unit: 'MCS 阶', digits: 2 },
+  { id: 'offset', label: '补偿 OLLA（compOlla÷1024000）', column: '714_compOlla_scaled', kind: 'mean', unit: '阶', digits: 2 },
   { id: 'schType', label: 'schType 构成', column: 'schType', kind: 'cats' },
   { id: 'suOrMu', label: 'SU / MU 构成（suOrMuFlag）', column: 'suOrMuFlag', kind: 'cats' },
 ];
@@ -65,9 +67,9 @@ export async function cellBasics(side, where) {
       ${has('cw0SuMcs') ? `avg(${v('cw0SuMcs')})` : 'NULL'} AS __mcs,
       ${has('714_ack0') ? `(1.0 - avg(${a}) FILTER (WHERE ${a} IN (0,1))) * 100` : 'NULL'} AS __bler,
       ${has('usrschpdschDrbData') ? `avg(CASE WHEN ${d} > 0 AND ${d} < ${TRUNCATED_LIMIT} THEN 1.0 WHEN ${d} IS NOT NULL THEN 0.0 END) * 100` : 'NULL'} AS __trunc,
-      ${has('714_compOlla_scaled') ? `avg(${v('714_compOlla_scaled')})` : 'NULL'} AS __olla
+      ${ollaColumn(side.columns) ? `avg(${v(ollaColumn(side.columns))})` : 'NULL'} AS __olla
     FROM ${qi(side.table)} WHERE ${where}`);
-  return { mcs: r.__mcs, bler: r.__bler, trunc: r.__trunc, olla: r.__olla, matchRate: r.__n ? (r.__m / r.__n) * 100 : null };
+  return { mcs: r.__mcs, bler: r.__bler, trunc: r.__trunc, olla: r.__olla, ollaColumn: ollaColumn(side.columns), matchRate: r.__n ? (r.__m / r.__n) * 100 : null };
 }
 
 /** 逐用户指标（按 ambr 分组）。where 不含用户范围：表里总是列出全部用户。 */
@@ -83,7 +85,7 @@ export async function userMetrics(side, where) {
     const a = v('714_ack0');
     sel.push(`(1.0 - avg(${a}) FILTER (WHERE ${a} IN (0,1))) * 100 AS __bler`, `count(*) FILTER (WHERE ${a} IN (0,1)) AS __valid`, `count(*) FILTER (WHERE ${a} IS NOT NULL AND ${a} NOT IN (0,1)) AS __dtx`);
   }
-  if (has('714_compOlla_scaled')) sel.push(`avg(${v('714_compOlla_scaled')}) AS __olla`);
+  if (ollaColumn(side.columns)) sel.push(`avg(${v(ollaColumn(side.columns))}) AS __olla`);
   if (has('allocRbNum')) sel.push(`avg(${v('allocRbNum')}) AS __rb`);
   if (has('bandCqiCw0')) sel.push(`avg(${v('bandCqiCw0')}) AS __cqi`);
   const rows = await query(`SELECT ${sel.join(', ')} FROM ${qi(side.table)} WHERE ${where} AND "ambr" IS NOT NULL GROUP BY __u ORDER BY __n DESC`);
@@ -123,7 +125,7 @@ export function findingFilters(id, cell, R = FINDING_RULES) {
     case 'bler': return [condition('714_ack0', 'eq_num', 0)];
     case 'trunc': return [condition('usrschpdschDrbData', 'gt', 0), condition('usrschpdschDrbData', 'lt', TRUNCATED_LIMIT)];
     case 'mcs': return [condition('cw0SuMcs', 'lte', cell.mcs - R.mcsDrop)];
-    case 'olla': return [condition('714_compOlla_scaled', 'lte', cell.olla - R.ollaDrop)];
+    case 'olla': return [condition(cell.ollaColumn || '714_mcsOffset0_scaled', 'lte', cell.olla - R.ollaDrop)];
     case 'dtx': return [condition('714_ack0', 'not_null'), condition('714_ack0', 'not_in', [0, 1])];
     default: return []; // T396 聚合速率无法映射到单个 T537 时刻
   }
@@ -132,7 +134,7 @@ export function findingFilters(id, cell, R = FINDING_RULES) {
 export function checkCoverage(side, t396) {
   const definitions = [
     ['BLER', '714_ack0'], ['截包', 'usrschpdschDrbData'], ['MCS', 'cw0SuMcs'],
-    ['OLLA', '714_compOlla_scaled'], ['DTX', '714_ack0'],
+    ['OLLA', ollaColumn(side.columns) || '714_mcsOffset0_scaled'], ['DTX', '714_ack0'],
   ];
   const available = definitions.filter(([, c]) => side.columns.includes(c)).map(([n]) => n);
   const missing = definitions.filter(([, c]) => !side.columns.includes(c)).map(([n]) => n);
@@ -182,8 +184,8 @@ export function findings(cell, users, R = FINDING_RULES) {
       users.filter((u) => enough(u) && u.mcs != null && u.mcs <= cell.mcs - R.mcsDrop).sort((a, b) => a.mcs - b.mcs), 'cw0SuMcs', (u) => `${u.user}：${f1(u.mcs)}`);
   }
   if (cell.olla != null) {
-    add('olla', 'info', 'OLLA 明显偏负的用户', `调度行数 ≥ ${R.minRows} 且 compOlla 均值 ≤ 小区 ${f1(cell.olla)} − ${R.ollaDrop} dB`,
-      users.filter((u) => enough(u) && u.olla != null && u.olla <= cell.olla - R.ollaDrop).sort((a, b) => a.olla - b.olla), '714_compOlla_scaled', (u) => `${u.user}：${f1(u.olla)} dB`);
+    add('olla', 'info', 'OLLA 明显偏负的用户', `调度行数 ≥ ${R.minRows} 且 OLLA 均值 ≤ 小区 ${f1(cell.olla)} − ${R.ollaDrop} 阶`,
+      users.filter((u) => enough(u) && u.olla != null && u.olla <= cell.olla - R.ollaDrop).sort((a, b) => a.olla - b.olla), cell.ollaColumn || '714_mcsOffset0_scaled', (u) => `${u.user}：${f1(u.olla)} 阶`);
   }
   add('dtx', 'info', 'DTX 偏多的用户', `ack0 记录 ≥ ${R.minRows} 且 DTX（ack0 非 0/1）占比 ≥ ${R.dtxShare}%`,
     users.filter((u) => (u.valid || 0) + (u.dtx || 0) >= R.minRows && (u.dtx / ((u.valid || 0) + u.dtx)) * 100 >= R.dtxShare)

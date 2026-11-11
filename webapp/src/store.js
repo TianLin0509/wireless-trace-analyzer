@@ -45,7 +45,8 @@ export const toast = signal(null);
 export const errorBox = signal(null);
 export const kpiState = signal(null);
 export const qualityAck = signal(false);
-export const diagnosis = signal(null); // 用户主动打开的定位线索；换数据时清空
+export const diagnosis = signal(null);
+export const timelineFocus = signal(null); // 时间轴聚焦：{side, user, range, event}；换数据时清空 // 用户主动打开的定位线索；换数据时清空
 
 export const ready = computed(() => !!(sides.value.A || sides.value.B));
 export const running = computed(() => run.value?.status === 'running');

@@ -4,6 +4,7 @@ import { batch as signalBatch } from '@preact/signals';
 import { ingestT396, ingestTable, dropTable } from './engine/ingest.js';
 import { sniffFile, SNIFF_BYTES } from './engine/csvsniff.js';
 import { mergeSide } from './engine/merge.js';
+import { DIAG_537_COLUMNS, DIAG_714_COLUMNS } from './engine/config.js';
 import { compareT396 } from './engine/t396.js';
 import { getFile, getHead, isHelperFile } from './engine/fs.js';
 import { memoryUsage, unregisterFile } from './engine/db.js';
@@ -96,6 +97,7 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
       S.qualityAck.value = false;
       if (!keepUsers) S.users.value = [];
       S.diagnosis.value = null;
+      S.timelineFocus.value = null;
       S.page.value = 'work';
     }
     S.sides.value = { A: null, B: null };
@@ -164,7 +166,7 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
     }
 
     // 2) 预检全部 537/714（只读文件头，毫秒级）。一侧缺 714 时，用另一侧 714 的字段补出同名空列，保证 A/B 列集合一致
-    const wantedFor = (id) => (id === '537' ? [...new Set([...KEYS_537, ...fields.columns537])] : [...new Set([...KEYS_714, ...fields.columns714])]);
+    const wantedFor = (id) => (id === '537' ? [...new Set([...KEYS_537, ...fields.columns537, ...DIAG_537_COLUMNS])] : [...new Set([...KEYS_714, ...fields.columns714, ...DIAG_714_COLUMNS])]);
     const pre = {};
     for (const side of ['A', 'B']) {
       for (const id of ['537', '714']) {
