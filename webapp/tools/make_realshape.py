@@ -70,6 +70,8 @@ def shape(df: pd.DataFrame, prof: dict, trace: str, rng) -> tuple[list[str], pd.
             header.insert(i + 1, 'doubleDciFlg')
             out.insert(i + 1, 'doubleDciFlg__dup', out['doubleDciFlg'])
     else:
+        if 'dlAmbr' in out.columns:
+            out['dlAmbr'] = 1998000000 + (df['dlAmbr'] - 5000)  # 与 537 ambr 标签一致
         header = cols + ['']
         out[''] = ''
     return header, out

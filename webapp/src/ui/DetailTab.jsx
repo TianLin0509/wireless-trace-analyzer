@@ -1,3 +1,4 @@
+import { metricInfo } from '../engine/metrics.js';
 import { useState, useEffect } from 'preact/hooks';
 import * as S from '../store.js';
 import { useAsync, useDebounced } from './hooks.js';
@@ -112,6 +113,7 @@ export function DetailTab() {
             <tr>
               {cols.map((c) => (
                 <th
+                  title={(() => { const m = metricInfo(c); return m.label === c && m.explanation.startsWith('CSV 原始') ? c : `${m.title}${m.unit ? ' · ' + m.unit : ''}${m.explanation ? '\n' + m.explanation : ''}`; })()}
                   class={(filteredCols.has(c) ? 'filtered ' : '') + (picked.includes(c) ? 'sel ' : '') + (overCol === c ? 'drag-over' : '')}
                   draggable
                   onDragStart={(e) => { setDragCol(c); e.dataTransfer.effectAllowed = 'move'; }}

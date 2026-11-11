@@ -216,7 +216,18 @@ export async function limitShares(side, where) {
       avg(CASE WHEN __rl THEN 1.0 ELSE 0.0 END) FILTER (WHERE __init AND __ok AND __rl IS NOT NULL) * 100 AS __rbl
     FROM b GROUP BY GROUPING SETS ((__u), ())`);
   const map = new Map(rows.map((r) => [r.__g, { n: Number(r.__n), fail: r.__fail, data: r.__data, rb: r.__rbl }]));
-  return { cell: map.get('__cell__') || null, users: map, rule: { data: dataLim ? (has('waitingData') ? '待发数据 waitingData ≤ 本次 TB 大小（本次就能发完缓存）' : '承载数据 < 90% TB 大小（有填充）') : null, rb: rbLim ? '分配 RB allocRbNum < 估算需求 esitimatedRb' : null } };
+  // 失败码 Top：十六进制字段读入后是数值，显示时转回 0x 形式
+  let topCodes = [];
+  if (has('schErrCode')) {
+    const codes = await query(`SELECT ${qi('schErrCode')} AS __c, count(*) AS __n FROM ${qi(side.table)} WHERE ${where} AND NOT ${e.err} GROUP BY 1 ORDER BY 2 DESC LIMIT 5`);
+    const total = Number(map.get('__cell__')?.n) || 0;
+    topCodes = codes.map((r) => {
+      const v = r.__c;
+      const hex = typeof v === 'number' && Number.isFinite(v) ? '0x' + Math.round(v).toString(16) : String(v);
+      return { code: hex, n: Number(r.__n), share: total ? (Number(r.__n) / total) * 100 : null };
+    });
+  }
+  return { cell: map.get('__cell__') || null, users: map, topCodes, rule: { data: dataLim ? (has('waitingData') ? '待发数据 waitingData ≤ 本次 TB 大小（本次就能发完缓存）' : '承载数据 < 90% TB 大小（有填充）') : null, rb: rbLim ? '分配 RB allocRbNum < 估算需求 esitimatedRb' : null } };
 }
 
 /** MCS 调整链：从 CQI 估计到最终调度 MCS 的每一步均值（只取成功初传）。顺序已用真实数据核对，可在此调整。 */

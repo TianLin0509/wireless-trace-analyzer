@@ -1,4 +1,5 @@
 // 诊断结论：每个用户一句话初判 + 证据 + 跳转；A/B 时给小区一句话结论与 B 侧新出现的问题。
+import { useState } from 'preact/hooks';
 import * as S from '../store.js';
 import { useAsync } from './hooks.js';
 import { rateFactors, limitShares, linkDiag, detectEvents } from '../engine/diagnose.js';
@@ -20,6 +21,30 @@ async function sideEvidence(side, t396Rows, key) {
 
 function CauseTags({ causes, max = 3 }) {
   return causes.slice(0, max).map((c, i) => <span class="tag" style={{ color: CAUSE_COLOR[c.id], borderColor: CAUSE_COLOR[c.id] + '66', background: i === 0 ? CAUSE_COLOR[c.id] + '14' : '#fff', marginRight: '4px', fontWeight: i === 0 ? 600 : 400 }} title={c.hint}>{c.label}</span>);
+}
+
+const NOTE_KEY = 'trace-errcode-notes';
+const loadNotes = () => { try { return JSON.parse(localStorage.getItem(NOTE_KEY) || '{}'); } catch { return {}; } };
+
+/** 调度失败码 Top：码的含义各版本不同，由使用者在本机备注（只存在本浏览器）。 */
+function ErrCodes({ codes }) {
+  const [notes, setNotes] = useState(loadNotes);
+  if (!codes?.length) return null;
+  const edit = (code) => {
+    const v = window.prompt(`给失败码 ${code} 写个备注（只保存在本浏览器）`, notes[code] || '');
+    if (v == null) return;
+    const next = { ...notes, [code]: v.trim() };
+    if (!v.trim()) delete next[code];
+    setNotes(next);
+    try { localStorage.setItem(NOTE_KEY, JSON.stringify(next)); } catch { /* 无痕模式 */ }
+  };
+  return (
+    <div class="kcard"><div class="nm">调度失败码 Top（点码写备注）</div>
+      <div style="margin-top:4px">{codes.slice(0, 4).map((c) => (
+        <div class="row" style="cursor:pointer" title="点击写备注" onClick={() => edit(c.code)}>
+          <span class="num" style="font-family:var(--mono)">{c.code}</span><span class="muted" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{notes[c.code] || ''}</span><span class="sp" /><b class="num">{fmt(c.share, 2)}%</b>
+        </div>))}</div></div>
+  );
 }
 
 const goto = (user, tab, side) => {
@@ -95,6 +120,7 @@ function SingleView({ d, sideKey }) {
           <span>DTX</span><b>{fmt(c.dtx, 2)}%</b><span>OLLA</span><b>{fmt(c.olla, 2)} 阶</b>
           <span>调度失败</span><b>{fmt(d.lim?.cell?.fail, 2)}%</b><span>数据受限</span><b>{fmt(d.lim?.cell?.data, 1)}%</b>
         </div><div class="foot">BLER 口径：{d.rate.blerSource || '—'}</div></div>}
+        <ErrCodes codes={d.lim?.topCodes} />
         <div class="kcard"><div class="nm">初判规则</div><div class="foot" style="line-height:1.7">
           数据受限 ≥ {CONCLUDE_RULES.data}% → 业务量不足；调度失败 ≥ {CONCLUDE_RULES.fail}% → 调度不足；OLLA 深负 → CQI 偏乐观；BLER 超目标或连续 NACK ≥ 3 次 → 信道波动；PDCCH 送达 &lt; 中位 97% 或连续 DTX ≥ 3 次 → PDCCH 漏检；因子低于中位 {Math.round(CONCLUDE_RULES.weak * 100)}% → 对应短板。</div></div>
       </div>
