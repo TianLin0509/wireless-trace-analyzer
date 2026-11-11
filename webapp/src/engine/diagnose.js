@@ -105,8 +105,10 @@ export function diagExprs(columns, opts = {}) {
     : (has('allocRbNum') ? `(${n('allocRbNum')} > 0)` : 'TRUE');
   // 初传判定优先级：537 重传次数 → 537 调度类型（真实重传写作 DLSCH_TYPE_HARQ_DRB / DTX_DRB）→ 714 重传次数（只覆盖连接上的行，最后才用）
   const st = `upper(coalesce(CAST(${qi('schType')} AS VARCHAR), ''))`;
-  const init = has('tb0ReTransTimes') ? `(coalesce(${n('tb0ReTransTimes')}, 0) = 0)`
-    : has('schType') ? `(${st} NOT LIKE '%RETRAN%' AND ${st} NOT LIKE '%RETX%' AND ${st} NOT LIKE '%HARQ%' AND ${st} NOT LIKE '%DTX%')`
+  // 真实数据里 DTX 引起的重传（DLSCH_TYPE_DTX_*）重传次数不一定加 1，所以两个条件同时用
+  const notRetxType = `(${st} NOT LIKE '%RETRAN%' AND ${st} NOT LIKE '%RETX%' AND ${st} NOT LIKE '%HARQ%' AND ${st} NOT LIKE '%DTX%')`;
+  const init = has('tb0ReTransTimes') ? `(coalesce(${n('tb0ReTransTimes')}, 0) = 0${has('schType') ? ` AND ${notRetxType}` : ''})`
+    : has('schType') ? notRetxType
       : has('714_retansNum0') ? `(coalesce(${n('714_retansNum0')}, 0) = 0)` : 'TRUE';
   const rb = has('allocRbNum') ? `coalesce(${n('allocRbNum')}, 0)` : null;
   const layers = has('schRank') ? `greatest(coalesce(${n('schRank')}, 0) + ${rb0}, 1)` : '1';
@@ -131,7 +133,9 @@ export function diagExprs(columns, opts = {}) {
   // 首次重传：真实 537 的 ACK 字段是“上一次反馈”，所以初传 BLER = 首次重传数 / 初传数（DTX 引起的单独计）
   const retx1 = has('tb0ReTransTimes') ? `(${n('tb0ReTransTimes')} = 1)` : null;
   const dtxRow = `(${ack ? `coalesce(${ack} = 2, FALSE)` : 'FALSE'}${has('schType') ? ` OR upper(CAST(${qi('schType')} AS VARCHAR)) LIKE '%DTX%'` : ''})`;
-  return { has, err, init, rb, layers, bits, bitsSource, ack, ackSource, retx1, dtxRow, rankBase: rb0, user, tti: has('tti') ? n('tti') : null };
+  // 一次 DTX：首次重传且是 DTX 引起的；有调度类型时，DTX 类型行（重传次数 ≤ 1）都算
+  const dtx1 = retx1 ? `((${retx1} AND ${dtxRow})${has('schType') ? ` OR (${st} LIKE '%DTX%' AND coalesce(${n('tb0ReTransTimes')}, 0) <= 1)` : ''})` : null;
+  return { has, err, init, rb, layers, bits, bitsSource, ack, ackSource, retx1, dtxRow, dtx1, rankBase: rb0, user, tti: has('tti') ? n('tti') : null };
 }
 
 /**
@@ -152,7 +156,7 @@ export async function rateFactors(side, where) {
   const [span] = await query(`SELECT ${e.tti ? `count(DISTINCT ${e.tti})` : 'count(*)'} AS __span FROM ${qi(side.table)} WHERE ${where}`);
   const rows = await query(`WITH b AS (
       SELECT ${e.user} AS __u, ${e.err} AS __ok, ${e.init} AS __init, ${e.rb} AS __rb, ${e.layers} AS __l,
-        ${e.bits} AS __bits, ${e.ack || 'NULL'} AS __ack, ${e.retx1 || 'FALSE'} AS __r1, ${e.dtxRow} AS __dtxr
+        ${e.bits} AS __bits, ${e.ack || 'NULL'} AS __ack, ${e.retx1 || 'FALSE'} AS __r1, ${e.dtxRow} AS __dtxr, ${e.dtx1 || 'FALSE'} AS __d1
       FROM ${qi(side.table)} WHERE ${where})
     SELECT CASE WHEN grouping(__u) = 1 THEN '__cell__' ELSE __u END AS __g,
       count(*) FILTER (WHERE __init) AS __tries,
@@ -165,7 +169,7 @@ export async function rateFactors(side, where) {
       sum(${ackOk}) FILTER (WHERE __init AND __ok) AS __abits,
       count(*) FILTER (WHERE __init AND __ok AND __ack IS NOT NULL) AS __matched,
       count(*) FILTER (WHERE __r1 AND __ok AND NOT __dtxr) AS __r1nack,
-      count(*) FILTER (WHERE __r1 AND __ok AND __dtxr) AS __r1dtx
+      count(*) FILTER (WHERE __d1 AND __ok) AS __r1dtx
     FROM b GROUP BY GROUPING SETS ((__u), ())`);
   const viaRetx = !!e.retx1;
   const S = Number(span?.__span) || 1;
@@ -265,14 +269,14 @@ export async function linkDiag(side, where) {
     'count(*) FILTER (WHERE __i) AS __n',
     ...chain.map(([c], i) => `avg(${n(c)}) FILTER (WHERE __i) AS __c${i}`),
     ollaCol ? `avg(${n(ollaCol)}) FILTER (WHERE __i) AS __olla, quantile_cont(${n(ollaCol)}, 0.1) FILTER (WHERE __i) AS __olla10, min(${n(ollaCol)}) FILTER (WHERE __i) AS __ollaMin` : 'NULL AS __olla, NULL AS __olla10, NULL AS __ollaMin',
-    e.retx1 ? `count(*) FILTER (WHERE __r1 AND NOT __dtxr) * 100.0 / nullif(count(*) FILTER (WHERE __i) - count(*) FILTER (WHERE __r1 AND __dtxr), 0) AS __bler, count(*) FILTER (WHERE __r1 AND __dtxr) * 100.0 / nullif(count(*) FILTER (WHERE __i), 0) AS __dtx`
+    e.retx1 ? `count(*) FILTER (WHERE __r1 AND NOT __dtxr) * 100.0 / nullif(count(*) FILTER (WHERE __i) - count(*) FILTER (WHERE __d1), 0) AS __bler, count(*) FILTER (WHERE __d1) * 100.0 / nullif(count(*) FILTER (WHERE __i), 0) AS __dtx`
       : e.ack ? `(1 - avg(CASE WHEN ${e.ack} = 1 THEN 1.0 WHEN ${e.ack} = 0 THEN 0.0 END) FILTER (WHERE __i)) * 100 AS __bler, avg(CASE WHEN ${e.ack} IS NULL THEN NULL WHEN ${e.ack} NOT IN (0,1) THEN 1.0 ELSE 0.0 END) FILTER (WHERE __i) * 100 AS __dtx` : 'NULL AS __bler, NULL AS __dtx',
     `${target} AS __target`,
     has('suOrMuFlag') && has('tb0SchMcs') ? `avg(${n('tb0SchMcs')}) FILTER (WHERE __i AND upper(CAST(${qi('suOrMuFlag')} AS VARCHAR)) LIKE '%MU%') AS __muMcs, avg(${n('tb0SchMcs')}) FILTER (WHERE __i AND upper(CAST(${qi('suOrMuFlag')} AS VARCHAR)) NOT LIKE '%MU%') AS __suMcs, avg(CASE WHEN upper(CAST(${qi('suOrMuFlag')} AS VARCHAR)) LIKE '%MU%' THEN 100.0 ELSE 0 END) FILTER (WHERE __i) AS __muShare` : 'NULL AS __muMcs, NULL AS __suMcs, NULL AS __muShare',
     has('bandCqiCw0') ? `avg(${n('bandCqiCw0')}) FILTER (WHERE __i) AS __cqi` : 'NULL AS __cqi',
   ];
   const rows = await query(`SELECT CASE WHEN grouping(__u) = 1 THEN '__cell__' ELSE __u END AS __g, ${sel.join(', ')}
-    FROM (SELECT *, ${e.user} AS __u, (${e.init}) AS __i, ${e.retx1 || 'FALSE'} AS __r1, ${e.dtxRow} AS __dtxr FROM ${qi(side.table)} WHERE ${where} AND ${e.err}) GROUP BY GROUPING SETS ((__u), ())`);
+    FROM (SELECT *, ${e.user} AS __u, (${e.init}) AS __i, ${e.retx1 || 'FALSE'} AS __r1, ${e.dtxRow} AS __dtxr, ${e.dtx1 || 'FALSE'} AS __d1 FROM ${qi(side.table)} WHERE ${where} AND ${e.err}) GROUP BY GROUPING SETS ((__u), ())`);
   const pack = (r) => ({
     user: r.__g, n: Number(r.__n),
     chain: chain.map(([c, label], i) => ({ column: c, label, value: r[`__c${i}`] })),

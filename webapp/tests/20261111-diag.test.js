@@ -110,3 +110,22 @@ describe('真实数据回测后的规则（2026-11-11）', () => {
     expect(f).not.toContain('链路扣阶多');
   });
 });
+
+import { diagExprs } from '../src/engine/diagnose.js';
+
+describe('2026-11-11 真实回测第 6 轮修正', () => {
+  const mk = (user, o = {}) => ({ user, tries: 1000, factors: { tries: 500, okRate: 0.98, rb: 60, layers: 1.6, eta: 500, pdcch: 0.99, decode: 0.9, ...o } });
+  const base = ['a', 'b', 'c', 'd'].map((u) => mk(u));
+  it('小包降阶并进业务量不足，不重复成两条', () => {
+    const lim = { users: new Map([['x', { data: 90, fail: 0 }]]) };
+    const r = concludeUsers({ rate: { users: [...base, mk('x', { eta: 200 })] }, lim, linkFlagsByUser: new Map([['x', [['小包降阶', '']]]]), events: [] });
+    const c = r.find((u) => u.user === 'x').causes;
+    expect(c.map((x) => x.id)).toEqual(['data']);
+    expect(c[0].evidence).toContain('小包降阶');
+  });
+  it('有调度类型时，DTX/HARQ 类型行不算初传（真实数据里 DTX 重传次数不一定加 1）', () => {
+    const e = diagExprs(['tb0ReTransTimes', 'schType', 'tb0AckState']);
+    expect(e.init).toContain('DTX');
+    expect(e.dtx1).toContain('DTX');
+  });
+});

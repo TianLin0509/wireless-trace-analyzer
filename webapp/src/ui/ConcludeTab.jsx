@@ -111,7 +111,7 @@ function SingleView({ d, sideKey }) {
         <div style="padding:0 10px 8px">{pg.bar}</div>
       </div>
       <div class="diag-side">
-        {common.length > 0 && <div class="kcard"><div class="nm">小区共性问题（≥ {Math.round(CONCLUDE_RULES.common * 100)}% 用户都有）</div><div style="margin-top:4px">{common.map((c) => <div class="row" title={c.hint}><span style={{ color: CAUSE_COLOR[c.id] }}>●</span><span>{c.label}</span><span class="sp" /><b>{c.users}/{d.list.length}</b></div>)}</div></div>}
+        {common.length > 0 && <div class="kcard"><div class="nm">小区共性问题（≥ {Math.round(CONCLUDE_RULES.common * 100)}% 用户都有）</div><div style="margin-top:4px">{common.map((c) => <div class="row" title={c.hint}><span style={{ color: CAUSE_COLOR[c.id] }}>●</span><span>{c.label}</span><span class="sp" /><b>{c.users}/{d.list.length}</b></div>)}{common.some((c) => c.id === 'data') && <div class="faint" style="margin-top:4px">大多数用户都是小业务：这是测试场景属性，不是故障；速率、MCS、RB 的高低先按业务量解读</div>}</div></div>}
         <div class="kcard"><div class="nm">本小区用户的首要问题分布（不含共性）</div>
           <div style="margin-top:6px">{Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([id, n]) => <div class="row"><span style={{ color: CAUSE_COLOR[id] }}>●</span><span>{CAUSES[id].label}</span><span class="sp" /><b>{n}</b></div>)}
             <div class="row"><span class="faint">●</span><span class="muted">未触发规则</span><span class="sp" /><b>{clean}</b></div></div></div>

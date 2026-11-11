@@ -3,7 +3,7 @@
 import { FACTORS, logShare } from './diagnose.js';
 
 export const CAUSES = {
-  data: { label: '业务量不足（小包/截包）', hint: '缓存经常一次就发完，速率低主要因为没那么多数据，不是空口问题', tab: 'rate' },
+  data: { label: '业务量不足（小包/截包）', hint: '缓存经常一次就发完，速率低主要因为没那么多数据，不是空口问题；全小区都这样时属于测试场景（小业务），不是故障', tab: 'rate' },
   sched: { label: '调度机会/资源不足', hint: '调度失败多或被调度的次数少：看 CCE、用户数与优先级', tab: 'rate' },
   optimistic: { label: 'CQI 偏乐观（OLLA 长期深负）', hint: 'OLLA 外环一直往下压：CQI 虚高或干扰没有体现在 CQI 里', tab: 'link' },
   fluct: { label: '信道波动大（BLER 超目标）', hint: 'OLLA 跟不上信道变化：移动、突发干扰', tab: 'evt' },
@@ -50,7 +50,8 @@ export function concludeUsers({ rate, lim, linkFlagsByUser, events, t396 }, R = 
     if (flags.includes('BLER 超目标') || evHigh(u, 'nack')) add('fluct', [flags.includes('BLER 超目标') && 'BLER 比目标高 5 点以上', ev.nack && `连续 NACK 事件 ${ev.nack} 次`].filter(Boolean).join('，'), 2 + (ev.nack || 0) / 10);
     if ((ratio.pdcch != null && ratio.pdcch < 0.97) || evHigh(u, 'dtx')) add('pdcch', [ratio.pdcch != null && `PDCCH 送达 ${(u.factors.pdcch * 100).toFixed(1)}%（中位 ${(m.pdcch * 100).toFixed(1)}%）`, ev.dtx && `连续 DTX 事件 ${ev.dtx} 次`].filter(Boolean).join('，'), 2 + (ev.dtx || 0) / 20);
     if (flags.includes('MU 降阶大')) add('mu', 'MU MCS 比 SU 低 3 阶以上', 1.5);
-    if (flags.includes('小包降阶')) add('data', '降阶步骤扣阶多（小包降阶）', 2.5);
+    // 小包降阶和业务量不足是同一件事：已判数据受限时并进同一条证据，不另报
+    if (flags.includes('小包降阶')) { const d = causes.find((c) => c.id === 'data'); if (d) d.evidence += '；MCS 主要在降阶步骤扣掉（小包降阶，正常机制）'; else add('data', '降阶步骤扣阶多（小包降阶）', 2.5); }
     // 数据受限时，每RB每层比特低（小包降阶）、层数低、RB 少都是小包的结果，不再单列成别的原因
     if (!dataLimited && ratio.eta != null && ratio.eta < R.channel && !flags.includes('OLLA 深负')) add('channel', `每RB每层比特为中位的 ${(ratio.eta * 100).toFixed(0)}%`, 1 + (1 - ratio.eta) * 3);
     if (!dataLimited && ratio.layers != null && ratio.layers < R.weak) add('rank', `层数为中位的 ${(ratio.layers * 100).toFixed(0)}%`, 1 + (1 - ratio.layers) * 2);
