@@ -194,6 +194,7 @@ kbd { font: 12px var(--mono); background: #fff; border: 1px solid #d6dae0; borde
 .banner { padding: 8px 12px; border-radius: 10px; margin-bottom: 10px; display: flex; gap: 10px; align-items: center; }
 .banner.warn { background: #fffaf0; border: 1px solid #f1d7a4; color: #7a4a00; }
 .banner.info { background: #f1f5ff; border: 1px solid #c9d6fb; color: #1e3a8a; }
+.banner > b { flex-shrink: 0; white-space: nowrap; }
 .empty { padding: 40px; text-align: center; color: var(--soft); }
 .skeleton { background: linear-gradient(90deg, #f1f3f5 25%, #e9ecef 37%, #f1f3f5 63%); background-size: 400% 100%; animation: sk 1.4s infinite; border-radius: 8px; }
 @keyframes sk { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
