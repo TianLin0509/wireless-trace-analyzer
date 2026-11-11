@@ -102,7 +102,7 @@ export async function collectReport() {
   }
   const stale = () => S.dataVersion.value !== version || S.mode.value !== model.mode || JSON.stringify(S.view.value) !== JSON.stringify(view) || JSON.stringify(S.users.value) !== JSON.stringify(users) || S.running.value;
   if (single && sides.A) {
-    const overview = await cellOverview(sides.A, filterSql(filters, sides.A.columns, view.search), stale);
+    const overview = await cellOverview(sides.A, filterSql(filters, sides.A.columns, view.search), stale, { filters, search: view.search });
     if (overview) model.cards = [...overview.cards, { label: '714 匹配率', value: overview.matchRate, unit: '%', n: overview.rows, kind: 'share', digits: 1 }];
     const where = filterSql(view.filters, sides.A.columns, view.search);
     const cell = await cellBasics(sides.A, where);

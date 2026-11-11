@@ -33,7 +33,7 @@ with sync_playwright() as p:
     run = pg.evaluate("() => { const r = window.__trace.S.run.value; return { status: r.status, steps: r.steps.map((s) => s.id) }; }")
     checks["只读一侧数据（无 B 步骤）"] = run["status"] == "done" and not any(s.startswith("B") or s == "mergeB" for s in run["steps"])
     tabs = pg.locator(".tabs button").all_inner_texts()
-    checks["标签页：概览/诊断四页/用户/明细/图表/数据质量"] = tabs[:9] == ["概览", "速率拆解", "链路诊断", "异常事件", "时间轴", "用户", "明细", "图表", "数据质量"]
+    checks["标签页：概览/诊断五页/用户/明细/图表/数据质量"] = tabs[:10] == ["概览", "诊断结论", "速率拆解", "链路诊断", "异常事件", "时间轴", "用户", "明细", "图表", "数据质量"]
     checks["顶栏不出现 A/B"] = pg.locator(".top .k.b").count() == 0 and "单小区分析" in pg.inner_text(".top")
     cards = {pg.locator(".kcard").nth(i).locator(".nm span").first.inner_text(): pg.locator(".kcard").nth(i).locator(".big").first.inner_text() if pg.locator(".kcard").nth(i).locator(".big").count() else "" for i in range(pg.locator(".kcard").count())}
     checks["概览卡片 ≥ 8 张（含 MCS、BLER、截包、Rank2、构成）"] = len(cards) >= 8 and any("MCS 均值" in k for k in cards) and any("BLER" in k for k in cards)

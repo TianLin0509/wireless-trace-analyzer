@@ -4,7 +4,7 @@ import { query } from './db.js';
 import { qi } from './sql.js';
 import { filterSql, userScope } from './query.js';
 import { MAX_CHART_POINTS, TRUNCATED_LIMIT } from './config.js';
-import { rankBase, initCond } from './diagnose.js';
+import { rankBase, initCond, bler714For } from './diagnose.js';
 
 const QUANTS = Array.from({ length: 101 }, (_, i) => i / 100);
 const SPARK_QUANTS = Array.from({ length: 41 }, (_, i) => i / 40);
@@ -129,10 +129,12 @@ export async function summaryCards(sides, filters, search, isStale) {
   for (const def of CARD_DEFS) {
     check(isStale);
     const where = (s) => (s ? filterSql(filters, s.columns, search) : 'TRUE');
-    const a = await cardSide(sides.A, def, where(sides.A));
-    const b = await cardSide(sides.B, def, where(sides.B));
+    const via714 = def.kind === 'bler' ? [bler714For(sides.A, filters, search), bler714For(sides.B, filters, search)] : null;
+    const use714 = via714 && via714.every((x, i) => x || !sides['AB'[i]]);
+    const a = use714 ? via714[0] : await cardSide(sides.A, def, where(sides.A));
+    const b = use714 ? via714[1] : await cardSide(sides.B, def, where(sides.B));
     if (!a && !b) continue;
-    out.push({ ...def, test: undefined, a, b, verdict: verdict(def, a, b) });
+    out.push({ ...def, ...(use714 ? { label: '初传 BLER（714 独立统计，剔除 DTX）' } : {}), test: undefined, a, b, verdict: verdict(def, a, b) });
   }
   return out;
 }

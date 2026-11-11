@@ -57,12 +57,27 @@ export async function stats714(src537, src714) {
     FROM f GROUP BY GROUPING SETS ((__u), ())`);
   const pack = (r) => {
     const ack = Number(r.__ack) || 0, nack = Number(r.__nack) || 0, nAll = Number(r.__n) || 0, dtx = Number(r.__dtx) || 0;
-    return { n: nAll, initFeedback: ack + nack, bler: ack + nack ? (nack / (ack + nack)) * 100 : null, dtx: nAll ? (dtx / nAll) * 100 : null, olla: r.__olla, olla10: r.__olla10, target: r.__target };
+    return { n: nAll, ack, nack, dtxN: dtx, initFeedback: ack + nack, bler: ack + nack ? (nack / (ack + nack)) * 100 : null, dtx: nAll ? (dtx / nAll) * 100 : null, olla: r.__olla, olla10: r.__olla10, target: r.__target };
   };
   const byUser = new Map(rows.filter((r) => r.__g2 !== '__cell__').map((r) => [r.__g2, pack(r)]));
   const cellRow = rows.find((r) => r.__g2 === '__cell__');
   const unmapped = byUser.get('未映射')?.n || 0;
   return { cell: cellRow ? pack(cellRow) : null, byUser, unmappedShare: cellRow ? (unmapped / Number(cellRow.__n)) * 100 : null, rule: `714 原表：初传 = retansNum0 = 0${has('trcItem') ? ' 且 trcItem = 0' : ''}；BLER = NACK ÷ (ACK + NACK)；DTX = ack0 = 2 的反馈占比` };
+}
+
+/**
+ * 概览 / 结论卡片的 BLER：没有列筛选与搜索时，用 714 独立统计（按用户范围汇总），和链路诊断页同一口径；
+ * 有列筛选或搜索时 714 原表无法按 537 的条件筛，返回 null，调用方退回逐行连接口径。
+ */
+export function bler714For(side, filters, search) {
+  const s = side?.stats714;
+  if (!s || search || (filters || []).some((f) => !f.scope)) return null;
+  const scope = (filters || []).find((f) => f.scope);
+  const rows = scope ? scope.value.map((u) => s.byUser.get(String(u))).filter(Boolean) : [s.cell].filter(Boolean);
+  if (!rows.length) return null;
+  const ack = rows.reduce((x, r) => x + (r.ack || 0), 0), nack = rows.reduce((x, r) => x + (r.nack || 0), 0), dtx = rows.reduce((x, r) => x + (r.dtxN || 0), 0);
+  if (!(ack + nack)) return null;
+  return { value: (nack / (ack + nack)) * 100, p: nack / (ack + nack), n: ack + nack, dtx, source: '714' };
 }
 
 /** 只取初传的条件：真实 537 重传行的 tb0SchMcs 是 28–31（256QAM 表保留给重传的编号），混进均值会把 MCS 拉高。 */

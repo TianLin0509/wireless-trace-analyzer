@@ -4,7 +4,7 @@ import { query } from './db.js';
 import { qi } from './sql.js';
 import { metricSummary, categoryCounts } from './stats.js';
 import { TRUNCATED_LIMIT } from './config.js';
-import { rankBase, initCond } from './diagnose.js';
+import { rankBase, initCond, bler714For } from './diagnose.js';
 
 const v = (c) => `TRY_CAST(${qi(c)} AS DOUBLE)`;
 /** OLLA 指标优先用外环累计量 mcsOffset[0]（样例注释：外环累计量/1024000，单位 MCS 阶），没有再用 compOlla。 */
@@ -26,7 +26,7 @@ export const OVERVIEW_CARDS = [
   { id: 'suOrMu', label: 'SU / MU 构成（suOrMuFlag）', column: 'suOrMuFlag', kind: 'cats' },
 ];
 
-export async function cellOverview(side, where, isStale) {
+export async function cellOverview(side, where, isStale, scope = null) {
   const has = (c) => side.columns.includes(c);
   const rbase = await rankBase(side);
   const [base] = await query(`SELECT count(*) AS __n,
@@ -43,6 +43,9 @@ export async function cellOverview(side, where, isStale) {
     if (def.kind === 'mean') {
       const s = await metricSummary(side, def.column, def.initOnly ? `${where} AND ${initCond(side.columns)}` : where, SPARK);
       cards.push({ ...def, test: undefined, value: s.mean, n: s.count, p50: s.p50, p90: s.p90, min: s.min, max: s.max, cdf: s.cdf });
+    } else if (def.kind === 'bler' && scope && bler714For(side, scope.filters, scope.search)) {
+      const b = bler714For(side, scope.filters, scope.search);
+      cards.push({ ...def, label: '初传 BLER（714 独立统计，剔除 DTX）', value: b.value, n: b.n, dtx: b.dtx });
     } else if (def.kind === 'bler') {
       const [r] = await query(`SELECT count(*) FILTER (WHERE ${x} IN (0,1)) AS __valid, count(*) FILTER (WHERE ${x} IS NOT NULL AND ${x} NOT IN (0,1)) AS __dtx,
           1.0 - avg(${x}) FILTER (WHERE ${x} IN (0,1)) AS __p FROM ${qi(side.table)} WHERE ${where}`);

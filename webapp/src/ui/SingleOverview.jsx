@@ -25,7 +25,7 @@ export function SingleOverview() {
   const ready = S.ready.value;
   const t396 = S.t396.value;
   const sel = S.selection.value.A;
-  const ov = useAsync((stale) => ready && side ? cellOverview(side, filterSql(S.effectiveFilters.value, side.columns, v.search), stale) : null,
+  const ov = useAsync((stale) => ready && side ? cellOverview(side, filterSql(S.effectiveFilters.value, side.columns, v.search), stale, { filters: S.effectiveFilters.value, search: v.search }) : null,
     [S.dataVersion.value, JSON.stringify(S.effectiveFilters.value), v.search, ready]);
   const check = useAsync(async (stale) => {
     if (!ready || !side) return null;
