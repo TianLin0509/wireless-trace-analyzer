@@ -1,7 +1,7 @@
 // 一键流水线：T396 先出结果 → 读取 537/714（只读需要的列）→ 自动合并。全程后台进行，界面随时可看已就绪的部分。
 // 任务串行：新任务先让旧任务停下并等它真正结束，再清理旧表，避免两个任务交叉改写同名表和界面状态。
 import { batch as signalBatch } from '@preact/signals';
-import { ingestT396, ingestTable, ingestAux, dropTable, fixUserKey } from './engine/ingest.js';
+import { ingestT396, ingestTable, ingestAux, dropTable } from './engine/ingest.js';
 import { sniffFile, SNIFF_BYTES } from './engine/csvsniff.js';
 import { mergeSide } from './engine/merge.js';
 import { stats714 } from './engine/diagnose.js';
@@ -207,7 +207,6 @@ async function execute(myRun, { tablesOnly = false, keepUsers = false } = {}) {
           const file = await fetchFile(key, f);
           const res = await timed(key, file.size, () => ingestTable(key, file, id, wantedFor(id), sniff));
           t[id] = res;
-          if (id === '537') res.userNote = await fixUserKey(res).catch(() => null);
           record(key, { key, trace: id, side, name: f.name, relPath: f.relPath, size: file.size, rows: res.rows, columns: res.columns, selected: res.selected, numericColumns: res.numericColumns, quality: res.quality, ignored: (sel[side]?.traces[id]?.candidates.length || 1) - 1 });
         } catch (err) {
           errors.push(`${key}：${err.message || err}`);

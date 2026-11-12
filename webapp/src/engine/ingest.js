@@ -76,14 +76,8 @@ export async function ingestT396(key, file) {
   const name = await registerFile(key, file);
   await dropRejects(key);
   try {
-    // 用户键：测试里 dlAmbr 常被配成每个 UE 一个标签值；外场数据里它是真实签约速率，多个 UE 共用一个值。
-    // 不同 dlAmbr 个数明显少于不同 susrId（< 80%）时改用 susrId（= 537 usrId）区分用户
-    let userCol = 'dlAmbr', userNote = null;
-    if (sniff.columns.includes('susrId')) {
-      const [d] = await query(`SELECT count(DISTINCT ${normUserExpr(qi('dlAmbr'))}) AS a, count(DISTINCT ${normUserExpr(qi('susrId'))}) AS s FROM ${readCsvSql(name, sniff, key)}`);
-      await dropRejects(key);
-      if (Number(d.s) >= 2 && Number(d.a) < 0.8 * Number(d.s)) { userCol = 'susrId'; userNote = `T396 的 dlAmbr 不是用户标签（${d.s} 个 susrId 只有 ${d.a} 个 dlAmbr），改用 susrId 区分用户`; }
-    }
+    // 用户键 = dlAmbr：ambr 是手机的固定身份（同一部手机多次接入不变）；susrId/usrId 每次接入都会重新分配
+    const userCol = 'dlAmbr', userNote = null;
     const rows = await query(`
       SELECT user_id, coalesce(sum(vol), 0) AS sum_vol, coalesce(sum(t), 0) AS sum_time, count(*) AS rows
       FROM (
@@ -198,17 +192,4 @@ export async function ingestAux(key, file, wantedColumns, sniffed) {
   } finally {
     await dropRejects(key);
   }
-}
-
-/**
- * 537 的用户键：ambr 在测试里常是每个 UE 一个标签值（如 1998000004）；外场数据里是真实签约速率，多个 UE 共用。
- * 不同 ambr 个数明显少于不同 usrId（< 80%）时，把 ambr 列改写成 usrId（= T396 susrId），下游各页不用改。返回说明文字或 null。
- */
-export async function fixUserKey(src) {
-  if (!src?.selected?.includes('ambr') || !src.selected.includes('usrId')) return null;
-  const [d] = await query(`SELECT count(DISTINCT ${qi('ambr')}) AS a, count(DISTINCT ${qi('usrId')}) AS u FROM ${qi(src.table)} WHERE ${qi('usrId')} IS NOT NULL`);
-  if (!(Number(d.u) >= 2 && Number(d.a) < 0.8 * Number(d.u))) return null;
-  const numeric = src.numericColumns.includes('ambr') && src.numericColumns.includes('usrId');
-  await exec(`UPDATE ${qi(src.table)} SET ${qi('ambr')} = ${numeric ? qi('usrId') : `CAST(${qi('usrId')} AS VARCHAR)`} WHERE ${qi('usrId')} IS NOT NULL`);
-  return `本批 537 的 ambr 是签约速率、不是用户标签（${d.u} 个 usrId 只有 ${d.a} 个 ambr），已改用 usrId 区分用户（与 T396 susrId 同一编号）；界面上的“ambr”列此时显示的是 usrId`;
 }
