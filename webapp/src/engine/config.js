@@ -13,7 +13,7 @@ export const DEFAULT_714_COLUMNS = [
 
 /** 诊断用字段：文件里有就自动读入（不必在汇总字段里勾选），供速率拆解、链路诊断、事件与时间轴使用。 */
 export const DIAG_537_COLUMNS = [
-  'schErrCode', 'userNum', 'schSuccUserNum', 'pairNum', 'esitimatedRb', 'waitingData', 'tb0TbByteLength', 'tb1TbByteLength',
+  'schErrCode', 'regNum', 'userNum', 'schSuccUserNum', 'pairNum', 'esitimatedRb', 'waitingData', 'tb0TbByteLength', 'tb1TbByteLength',
   'tb0ReTransTimes', 'tb0AckState', 'harqProcNo', 'mcsTable', 'actualRePerRb', 'estMcs0', 'cw0Mcs', 'initAdjMcs0', 'powerBackMcs0', 'rateMtcMcs0', 'reduceMcs0', 'suRank',
 ];
 export const DIAG_714_COLUMNS = ['iblerTarget', 'trcItem', 'retansNum0', 'ack1', 'harqNo', 'wbCqi4Bit0Type1', 'mcsBfCwFlter0', 'mcsCwRankFlter0', 'currAdjStep'];

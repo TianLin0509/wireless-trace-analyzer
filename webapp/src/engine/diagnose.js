@@ -224,7 +224,8 @@ export async function limitShares(side, where) {
   const has = e.has;
   const tb = has('tb0TbByteLength') ? `(coalesce(${n('tb0TbByteLength')},0) + ${has('tb1TbByteLength') ? `coalesce(${n('tb1TbByteLength')},0)` : '0'})` : null;
   const dataLim = has('waitingData') && tb ? `${n('waitingData')} <= ${tb}`
-    : has('usrschpdschDrbData') && tb ? `${n('usrschpdschDrbData')} < 0.9 * ${tb}` : null;
+    // 没有 waitingData 时：usrschpdschDrbData 是调度后剩余数据量，0 = 尾包（本次就把缓存发完）
+    : has('usrschpdschDrbData') ? `coalesce(${n('usrschpdschDrbData')}, 1) = 0` : null;
   const rbLim = has('esitimatedRb') && e.rb ? `${e.rb} < ${n('esitimatedRb')}` : null;
   if (!dataLim && !rbLim && !has('schErrCode')) return null;
   const rows = await query(`WITH b AS (SELECT ${e.user} AS __u, ${e.err} AS __ok, ${e.init} AS __init,

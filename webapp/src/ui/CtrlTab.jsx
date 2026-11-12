@@ -1,7 +1,8 @@
 // 控制信道：T650（PDCCH CCE 申请）+ T941（PDCCH 聚合级别调整），按用户汇总。
 // 回答两个问题：调度失败里有多少是 CCE 不够；DTX 多的用户 PDCCH 是否被迫抬高聚合级别。
 import * as S from '../store.js';
-import { ctrlFlags, ctrlRef, CTRL_RULES } from '../engine/ctrl.js';
+import { ctrlFlags, ctrlRef, CTRL_RULES, aggFrom537 } from '../engine/ctrl.js';
+import { useAsync } from './hooks.js';
 import { fmt, fmtInt } from './fmt.js';
 import { usePager, heatStyle, useSide } from './diagCommon.jsx';
 
@@ -9,7 +10,9 @@ const pct = (v, d = 1) => (v == null ? '—' : `${fmt(v, d)}%`);
 
 export function CtrlTab() {
   const { key, side, seg } = useSide();
-  const c = side?.statsCtrl;
+  // 没有 650/941 时用 537 的 regNum ÷ 6 估聚合级别（wiki：regNum = PDCCH 使用的 RB 数，除以 6 就是聚合级别）
+  const est = useAsync(() => (side && !side.statsCtrl ? aggFrom537(side) : null), [S.dataVersion.value, key]);
+  const c = side?.statsCtrl || est.data;
   const users = (c?.users || []).slice().sort((a, b) => (b.n650 || b.n941 || 0) - (a.n650 || a.n941 || 0));
   const ref = ctrlRef(users);
   const rows = users.map((u) => ({ ...u, flags: ctrlFlags(u, ref) }));
@@ -31,7 +34,7 @@ export function CtrlTab() {
         <div class="kcard" title="650：tracePos 为申请（非释放）、schTypeBitmap 含 DL_DATA/DL_DCCH 的记录里 result ≠ 0 的比例"><div class="nm">下行 CCE 申请失败</div><div class="vals num"><span class="big A">{pct(cell.dlFail, 2)}</span></div><div class="foot">{fmtInt(cell.dlN)} 次申请 · 门限 &gt;{CTRL_RULES.cceWarn}% 报警 / &gt;{CTRL_RULES.cceBad}% 严重</div></div>
         <div class="kcard" title="同上，schTypeBitmap 含 UL_DATA：上行授权的 PDCCH 申请"><div class="nm">上行 CCE 申请失败</div><div class="vals num"><span class="big A">{pct(cell.ulFail, 2)}</span></div><div class="foot">{fmtInt(cell.ulN)} 次申请 · 单次最多重试失败 {fmtInt(cell.ulCntMax)} 次</div></div>
         <div class="kcard" title="650 下行申请的初始聚合级别（initAggLvl）"><div class="nm">下行初始聚合级别</div><div class="vals num"><span class="big A">{fmt(cell.dlAgg, 1)}</span></div><div class="foot">聚合 16 占 {pct(cell.dlAgg16, 0)}</div></div>
-        <div class="kcard" title="941 suAggLvl：PDCCH 聚合级别调整后的结果"><div class="nm">PDCCH 聚合级别（941）</div><div class="vals num"><span class="big A">{fmt(cell.agg, 1)}</span></div><div class="foot">聚合 16 占 {pct(cell.agg16, 0)} · 用户中位 {pct(ref.agg16, 0)}</div></div>
+        <div class="kcard" title="941 suAggLvl：PDCCH 聚合级别调整后的结果"><div class="nm">PDCCH 聚合级别{c.from537 ? '（537 regNum÷6 估算）' : '（941）'}</div><div class="vals num"><span class="big A">{fmt(cell.agg, 1)}</span></div><div class="foot">聚合 16 占 {pct(cell.agg16, 0)} · 用户中位 {pct(ref.agg16, 0)}</div></div>
         <div class="kcard" title="941 continuousDlDtxNum > 0 的记录占比；以及这些记录里聚合级别 16 的占比（与全体对比，看 DTX 后是否抬聚合级别）"><div class="nm">连续 DTX 记录</div><div class="vals num"><span class="big A">{pct(cell.dtxShare, 2)}</span></div><div class="foot">最长 {fmtInt(cell.dtxMax)} 次 · 其中聚合 16 占 {pct(cell.agg16Dtx, 0)}（全体 {pct(cell.agg16, 0)}）</div></div>
         <div class="kcard" title="941 widebandCqi0 均值"><div class="nm">宽带 CQI（941）</div><div class="vals num"><span class="big A">{fmt(cell.cqi, 1)}</span></div><div class="foot">{c.unmappedShare > 5 ? `${fmt(c.unmappedShare, 1)}% 的 650 记录找不到 537 用户` : '650/941 记录都已挂到用户'}</div></div>
       </div>

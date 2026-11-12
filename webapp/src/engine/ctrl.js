@@ -30,6 +30,17 @@ const bitmap = (c) => `coalesce(TRY_CAST(regexp_extract(CAST(${n(c)} AS VARCHAR)
 // 聚合级别：文本 “AGG_LVL_16(4)” 取 16（括号里是档位下标）；纯数字按级别本身（941 suAggLvl 真实取值 1/2/4/8/16）
 const aggLevel = (c) => `coalesce(TRY_CAST(nullif(regexp_extract(CAST(${n(c)} AS VARCHAR), 'AGG_LVL_(\\d+)', 1), '') AS DOUBLE), TRY_CAST(CAST(${n(c)} AS VARCHAR) AS DOUBLE))`;
 
+/** 没有 650/941 时，用 537 的 regNum（PDCCH 占用 RB 数，÷ 6 = 聚合级别）按用户估聚合级别。 */
+export async function aggFrom537(side) {
+  if (!side?.columns?.includes('regNum')) return null;
+  const user = side.columns.includes('ambr') ? `CAST(${qi('ambr')} AS VARCHAR)` : `'小区'`;
+  const rows = await query(`SELECT CASE WHEN grouping(__u) = 1 THEN '__cell__' ELSE __u END AS __g, count(*) AS n, avg(__a) AS agg, avg(CASE WHEN __a >= 16 THEN 100.0 ELSE 0 END) AS agg16
+    FROM (SELECT ${user} AS __u, ${n('regNum')} / 6.0 AS __a FROM ${qi(side.table)} WHERE ${n('regNum')} > 0) GROUP BY GROUPING SETS ((__u), ())`);
+  const cell = rows.find((r) => r.__g === '__cell__');
+  if (!cell || !Number(cell.n)) return null;
+  return { cell: cell ? { agg: cell.agg, agg16: cell.agg16, n941: Number(cell.n) } : {}, users: rows.filter((r) => r.__g !== '__cell__').map((r) => ({ user: r.__g, agg: r.agg, agg16: r.agg16, n941: Number(r.n) })), from537: true };
+}
+
 const hex = (v) => (v == null || !Number.isFinite(Number(v)) ? null : '0x' + Math.round(Number(v)).toString(16).toUpperCase());
 
 export async function statsCtrl(src537, t650, t941) {
